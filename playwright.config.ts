@@ -1,6 +1,11 @@
 import {defineConfig, devices} from "@playwright/test"
 
-const PORT = 5173
+/*
+Overridable because 5173 is Vite's default and is very often already taken by
+another project's dev server. When it is, `reuseExistingServer` happily points
+the whole suite at that unrelated app and every locator times out.
+*/
+const PORT = Number(process.env["PLAYWRIGHT_PORT"] ?? 5173)
 const BASE_URL = `http://localhost:${PORT}`
 
 /*

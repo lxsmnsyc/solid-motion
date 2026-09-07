@@ -1,5 +1,5 @@
 import {mountedStates} from "../src/engine.js"
-import {createRoot, createSignal, flush, Show} from "solid-js"
+import {createRoot, createSignal, flush, For, Show} from "solid-js"
 import type {JSX} from "@solidjs/web"
 import {screen, render, waitFor, fireEvent} from "@solidjs/testing-library"
 import {Presence, Motion, VariantDefinition} from "../src/index.jsx"
@@ -416,30 +416,7 @@ describe("Presence", () => {
 		await waitFor(() => expect(el.isConnected).toBeFalsy(), {timeout: 2000})
 	})
 
-	test("renders only the first of several sibling children", async () => {
-		render(() => (
-			<Presence>
-				<div data-testid="first" />
-				<div data-testid="second" />
-			</Presence>
-		))
-
-		// Presence transitions one element at a time — later siblings are never
-		// resolved, so they're never inserted into the DOM at all
-		expect(await screen.findByTestId("first")).toBeTruthy()
-		expect(screen.queryByTestId("second")).toBeNull()
-	})
-
-	test("sibling Motion children warn instead of taking down the app", async () => {
-		/*
-		Only the first child is ever resolved, so a later `Motion` sibling is
-		constructed but never inserted and its ref is never set. That used to
-		throw — which halts Solid's reactive system for the whole app — and
-		blamed "more than one copy of solid-js", the wrong cause for by far the
-		most common way of reaching it.
-		*/
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
-
+	test("renders every sibling child", async () => {
 		render(() => (
 			<Presence>
 				<Motion.div data-testid="first" />
@@ -448,10 +425,110 @@ describe("Presence", () => {
 		))
 
 		expect(await screen.findByTestId("first")).toBeTruthy()
+		expect(screen.queryByTestId("second")).toBeTruthy()
+	})
+
+	test("each child exits on its own schedule", async () => {
+		const [items, setItems] = createSignal([1, 2, 3])
+
+		// queries are scoped to this container: a previous test's element can
+		// still be in document.body while its own exit animation finishes
+		const {container} = render(() => (
+			<Presence>
+				<For each={items()}>
+					{item => (
+						<Motion.div
+							data-testid={`item-${item}`}
+							initial={{opacity: 1}}
+							exit={{opacity: 0, transition: {duration: 0.3}}}
+						/>
+					)}
+				</For>
+			</Presence>
+		))
+		/*
+		Counted, not just found: re-resolving the children rather than memoising
+		them rebuilds the whole list, which leaves the previous elements exiting
+		*and* renders a fresh set — a duplicate that `querySelector` alone would
+		happily step over.
+		*/
+		const count = (n: number): number =>
+			container.querySelectorAll(`[data-testid="item-${n}"]`).length
+		const ids = (): string[] =>
+			Array.from(container.querySelectorAll("[data-testid]"), el =>
+				el.getAttribute("data-testid"),
+			) as string[]
+
+		flush()
+		const second = container.querySelector<HTMLElement>('[data-testid="item-2"]')!
+		expect(ids()).toEqual(["item-1", "item-2", "item-3"])
+
+		setItems([1, 3])
+		flush()
+
+		// the removed item animates out in its original slot, siblings untouched
+		await sleep(80)
+		expect(second.isConnected).toBeTruthy()
+		expect(ids()).toEqual(["item-1", "item-2", "item-3"])
+		expect(count(1)).toBe(1)
+		expect(count(3)).toBe(1)
+
+		await waitFor(() => expect(second.isConnected).toBeFalsy(), {timeout: 2000})
+		expect(ids()).toEqual(["item-1", "item-3"])
+	})
+
+	test("siblings removed together leave independently", async () => {
+		const [show, setShow] = createSignal(true)
+		let quick!: HTMLDivElement, slow!: HTMLDivElement
+
+		render(() => (
+			<Presence>
+				<Show when={show()}>
+					<Motion.div
+						ref={quick}
+						initial={{opacity: 1}}
+						exit={{opacity: 0, transition: {duration: 0.02}}}
+					/>
+				</Show>
+				<Show when={show()}>
+					<Motion.div
+						ref={slow}
+						initial={{opacity: 1}}
+						exit={{opacity: 0, transition: {duration: 0.6}}}
+					/>
+				</Show>
+			</Presence>
+		))
+
+		setShow(false)
+		flush()
+
+		// the fast one is gone well before the slow one, rather than both
+		// waiting on whichever finishes last
+		await waitFor(() => expect(quick.isConnected).toBeFalsy(), {timeout: 1000})
+		expect(slow.isConnected).toBeTruthy()
+
+		await waitFor(() => expect(slow.isConnected).toBeFalsy(), {timeout: 2000})
+	})
+
+	test("exitBeforeEnter still transitions a single element at a time", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+		render(() => (
+			<Presence exitBeforeEnter>
+				<Motion.div data-testid="first" />
+				<Motion.div data-testid="second" />
+			</Presence>
+		))
+
+		/*
+		`exitBeforeEnter` has to keep the incoming element out of the DOM until
+		the outgoing one is done, which only a switch transition expresses — so
+		it still resolves a single child, and a later sibling never renders.
+		*/
+		expect(await screen.findByTestId("first")).toBeTruthy()
 		expect(screen.queryByTestId("second")).toBeNull()
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringContaining("Presence only renders the first child"),
-		)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("exitBeforeEnter"))
 
 		warn.mockRestore()
 	})

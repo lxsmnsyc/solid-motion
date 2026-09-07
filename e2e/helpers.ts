@@ -44,6 +44,14 @@ export async function scaleOf(locator: Locator): Promise<number> {
 	return Number(values?.[0] ?? 1)
 }
 
+/** The vertical translation of an element's computed transform, in pixels. */
+export async function translateY(locator: Locator): Promise<number> {
+	const transform = await computed(locator, "transform")
+	if (transform === "none") return 0
+	const values = transform.match(/matrix\(([^)]+)\)/)?.[1]?.split(",")
+	return Number(values?.[5] ?? 0)
+}
+
 /** The horizontal translation of an element's computed transform, in pixels. */
 export async function translateX(locator: Locator): Promise<number> {
 	const transform = await computed(locator, "transform")

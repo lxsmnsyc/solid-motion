@@ -1,7 +1,17 @@
-import {animate, inView} from "framer-motion/dom"
+import {inView} from "framer-motion/dom"
 import {
 	hover,
 	press,
+	animateMotionValue,
+	isSVGElement,
+	motionValue,
+	styleEffect,
+	svgEffect,
+	type MotionValue,
+	hasReducedMotionListener,
+	initPrefersReducedMotion,
+	positionalKeys,
+	prefersReducedMotion,
 	buildHTMLStyles,
 	buildSVGAttrs,
 	isSVGTag,
@@ -12,6 +22,8 @@ import {
 import {SVGElements} from "@solidjs/web"
 import type {AnimationOptions} from "motion-dom"
 
+import {bindDrag} from "./drag.js"
+import {registerLayout, scheduleLayoutCheck} from "./layout.js"
 import type {Options, Target, VariantDefinition} from "./types.js"
 
 /** @internal */
@@ -178,7 +190,7 @@ wins over the always-active `animate`. Resolving through one ordered list
 means mount, update and every gesture all compute the target the same way,
 instead of each assembling its own idea of what the element should look like.
 */
-const LAYERS = ["animate", "inView", "hover", "press"] as const
+const LAYERS = ["animate", "inView", "focus", "hover", "press", "dragging"] as const
 type Layer = (typeof LAYERS)[number]
 type GestureLayer = Exclude<Layer, "animate">
 
@@ -204,6 +216,41 @@ interface Gesture {
 	bindOptions?: (options: Options) => unknown
 }
 
+/*
+Motion exposes no `focus` binder, so this is the same shape as `hover`/`press`
+built on the platform's own focus events.
+
+`:focus-visible` is the browser's own judgement of whether focus deserves to be
+shown — keyboard navigation, not a mouse click on a button. Gating on it keeps
+the animation aligned with the focus ring the user already sees, instead of
+firing on every click. Browsers that can't parse the selector fall back to
+animating on any focus, which is the more useful failure.
+*/
+const focus: GestureBinder = (el, onStart) => {
+	let onEnd: ((event: unknown) => void) | void
+
+	const handleFocus = (event: Event): void => {
+		let visible = true
+		try {
+			visible = el.matches(":focus-visible")
+		} catch {
+			/* selector unsupported — treat every focus as visible */
+		}
+		if (visible) onEnd = onStart(el, event)
+	}
+	const handleBlur = (event: Event): void => {
+		if (typeof onEnd === "function") onEnd(event)
+		onEnd = undefined
+	}
+
+	el.addEventListener("focus", handleFocus)
+	el.addEventListener("blur", handleBlur)
+	return () => {
+		el.removeEventListener("focus", handleFocus)
+		el.removeEventListener("blur", handleBlur)
+	}
+}
+
 const GESTURES: Gesture[] = [
 	{
 		layer: "inView",
@@ -212,6 +259,13 @@ const GESTURES: Gesture[] = [
 		leave: "viewleave",
 		detail: entry => ({originalEntry: entry}),
 		bindOptions: options => options.inViewOptions,
+	},
+	{
+		layer: "focus",
+		bind: focus,
+		enter: "focusstart",
+		leave: "focusend",
+		detail: event => ({originalEvent: event}),
 	},
 	{
 		layer: "hover",
@@ -239,7 +293,8 @@ and cut off in-progress interactions.
 function gesturesChanged(prev: Options, next: Options): boolean {
 	return (
 		GESTURES.some(gesture => !!prev[gesture.layer] !== !!next[gesture.layer]) ||
-		prev.inViewOptions !== next.inViewOptions
+		prev.inViewOptions !== next.inViewOptions ||
+		prev.drag !== next.drag
 	)
 }
 
@@ -249,8 +304,20 @@ function gesturesChanged(prev: Options, next: Options): boolean {
 
 interface MountContext {
 	element: Element
-	cancelAnimation?: () => void
+	/*
+	One MotionValue per animated property, created on first use and bound to
+	the element for the life of the mount. Holding the properties separately is
+	what lets them animate independently: retargeting `x` no longer has to stop
+	and replace a single element-wide animation, so an `opacity` mid-flight
+	carries on to its own target instead of freezing wherever it had reached.
+	*/
+	values: Map<string, MotionValue>
+	/** unbinds each MotionValue from the element, keyed by property */
+	unbindValues: Map<string, () => void>
+	/** everything currently animating, so a dispose can stop all of it */
+	running: Set<{stop: () => void}>
 	unbindGestures?: () => void
+	unregisterLayout?: () => void
 	/** resolves the latch handed out by `startExit()` — see there for why it isn't the animation's own promise */
 	resolveExit?: () => void
 }
@@ -263,8 +330,10 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 	const active: Record<Layer, boolean> = {
 		animate: true,
 		inView: false,
+		focus: false,
 		hover: false,
 		press: false,
+		dragging: false,
 	}
 	/** `exit` replaces the layer stack outright rather than merging on top of it */
 	let exiting = false
@@ -336,11 +405,84 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 		return target
 	}
 
+	/*
+	Mirrors Motion's own reduced-motion semantics: when active, *positional*
+	values — every transform, plus width/height/top/left/right/bottom — are
+	applied instantly, while everything else keeps animating. Movement is what
+	triggers vestibular discomfort; a fade or a colour change does not, and
+	suppressing those too would strip the meaning the animation carries.
+	*/
+	function shouldReduceMotion(): boolean {
+		switch (options.reducedMotion) {
+			case "always":
+				return true
+			case "user":
+				// the media-query listener is only attached when it's actually consulted
+				if (!hasReducedMotionListener.current) initPrefersReducedMotion()
+				return prefersReducedMotion.current ?? false
+			default:
+				return false
+		}
+	}
+
+	function withReducedMotion(
+		transition: AnimationOptions | undefined,
+		values: Record<string, unknown>,
+	): AnimationOptions | undefined {
+		if (!shouldReduceMotion()) return transition
+
+		// `{type: false}` is Motion's own "apply this value without animating"
+		const reduced: Record<string, unknown> = {...transition}
+		for (const key in values) {
+			if (positionalKeys.has(key)) reduced[key] = {type: false}
+		}
+		return reduced as AnimationOptions
+	}
+
+	/** The MotionValue driving `key`, created and bound to the element on first use. */
+	function valueFor(ctx: MountContext, key: string): MotionValue {
+		const existing = ctx.values.get(key)
+		if (existing) return existing
+
+		const value: MotionValue = motionValue<any>(readBaseValue(ctx.element, key))
+		ctx.values.set(key, value)
+		/*
+		Bound one key at a time. Motion caches the binding state per element, so
+		adding a key later still composes with the ones already bound — a `scale`
+		added after `x` joins the same `transform` rather than replacing it.
+		*/
+		bindValue(ctx, key, value)
+		return value
+	}
+
+	function bindValue(ctx: MountContext, key: string, value: MotionValue): void {
+		ctx.unbindValues.get(key)?.()
+		ctx.values.set(key, value)
+		/*
+		Bound one key at a time. Motion caches the binding state per element, so
+		adding a key later still composes with the ones already bound — a `scale`
+		added after `x` joins the same `transform` rather than replacing it.
+		*/
+		const bind = isSVGElement(ctx.element) ? svgEffect : styleEffect
+		ctx.unbindValues.set(key, bind(ctx.element, {[key]: value}))
+	}
+
+	/*
+	MotionValues the caller created and handed over through `style`. Bound
+	before anything animates, so a target naming the same property retargets
+	the caller's own value rather than shadowing it with a private one.
+	*/
+	function bindExternalValues(ctx: MountContext): void {
+		for (const [key, value] of Object.entries(options.values ?? {})) {
+			if (ctx.values.get(key) === value) continue
+			bindValue(ctx, key, value)
+		}
+	}
+
 	function applyTarget(target: Target, isExit = false): Promise<void> {
 		lastTarget = target
 
 		const ctx = current
-		ctx?.cancelAnimation?.()
 		if (!ctx) return Promise.resolve()
 		const values = targetValues(target)
 		/*
@@ -356,18 +498,52 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 		// merge, then normalize once — normalizing an already-normalized base
 		// transition again would re-merge its own per-value overrides against a
 		// *new* base and let stale, already-baked-in override values win
-		const transition = normalizeTransition({...options.transition, ...target.transition})
+		const transition = withReducedMotion(
+			normalizeTransition({...options.transition, ...target.transition}),
+			values,
+		)
 		dispatch(ctx.element, "motionstart", {target})
-		const controls = animate(ctx.element, values as any, transition as any)
-		ctx.cancelAnimation = () => controls.stop()
+
 		/*
-		Only a *completed* animation reaches the fulfilment arm: Motion leaves
-		`finished` permanently pending on a stopped or cancelled animation (it
-		neither resolves nor rejects), which is exactly why the exit latch below
-		can't just be `controls.finished` itself. The rejection arm is kept as a
-		guard against a future version choosing to reject instead.
+		One animation per property. Only the properties this target names are
+		retargeted; anything else already in flight is left to finish, which is
+		the whole point of holding the values separately.
 		*/
-		return controls.finished.then(
+		const running = Object.entries(values).map(([key, keyframes]) => {
+			const value = valueFor(ctx, key)
+			/*
+			Driven by name rather than through `animateSingleValue`, which passes
+			an empty one. The name is what lets Motion pick the per-value
+			override out of the transition and fall back to the right default for
+			that property — a spring for physical values like `x` and `scale`, a
+			tween for `opacity`.
+			*/
+			value.start(animateMotionValue(key, value, keyframes as any, transition as any))
+
+			/*
+			`undefined` when the animation finished synchronously — which is how
+			reduced motion's `{type: false}` lands. There is nothing to stop and
+			nothing to wait for, so it counts as already complete.
+			*/
+			const controls = value.animation
+			if (!controls) return undefined
+
+			ctx.running.add(controls)
+			void controls.finished.then(
+				() => ctx.running.delete(controls),
+				() => ctx.running.delete(controls),
+			)
+			return controls
+		})
+
+		/*
+		Only a *completed* animation settles: Motion leaves `finished`
+		permanently pending on one that was stopped or replaced (it neither
+		resolves nor rejects), which is exactly why the exit latch below can't
+		just be this promise. The rejection arm is kept as a guard against a
+		future version choosing to reject instead.
+		*/
+		return Promise.all(running.map(controls => controls?.finished)).then(
 			() => {
 				// don't dispatch on behalf of a mount cycle a newer one has superseded
 				if (current !== ctx) return
@@ -402,9 +578,19 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 
 		if (transformProps.has(key)) return defaultTransformValue(key)
 		const computed = window.getComputedStyle(el)
-		return key.startsWith("--")
+		const value = key.startsWith("--")
 			? computed.getPropertyValue(key)
 			: computed.getPropertyValue(camelToDash(key))
+
+		/*
+		A computed style is always a string, and `getComputedStyle` reports a
+		unitless property like `opacity` as `"1"`. Handing that to a MotionValue
+		as a string leaves it unable to interpolate towards a numeric target —
+		with no element to consult it can't infer a common value type, so it
+		gives up and jumps straight to the end. Anything carrying a unit or a
+		colour stays a string; Motion parses those itself.
+		*/
+		return /^-?\d*\.?\d+$/.test(value.trim()) ? parseFloat(value) : value
 	}
 
 	function captureBaseValues(el: Element, layer: GestureLayer): void {
@@ -414,6 +600,27 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 			// anything another layer already sets resolves on its own when this one ends
 			if (key in baseValues || key in driven) continue
 			baseValues[key] = readBaseValue(el, key)
+		}
+	}
+
+	/*
+	Drop base values for keys no gesture layer introduces any more — a reactive
+	`hover` that swaps `scale` for `opacity` would otherwise keep re-asserting
+	the captured `scale` on every target for the rest of the mount, fighting
+	anything else that legitimately changes it.
+
+	Only ever called *after* the target that reverts those keys has been
+	applied, so the element animates back to its base before the key stops
+	being asserted.
+	*/
+	function pruneBaseValues(): void {
+		const introduced = new Set<string>()
+		for (const gesture of GESTURES) {
+			const target = resolveTarget(options[gesture.layer], options.variants)
+			if (target) for (const key of Object.keys(targetValues(target))) introduced.add(key)
+		}
+		for (const key in baseValues) {
+			if (!introduced.has(key)) delete baseValues[key]
 		}
 	}
 
@@ -435,6 +642,34 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 				gesture.bindOptions?.(options),
 			),
 		)
+
+		/*
+		Drag isn't one of the table-driven gestures: it doesn't just switch a
+		layer on and off, it writes to `x`/`y` continuously for as long as the
+		pointer is down.
+		*/
+		if (options.drag) {
+			unbinds.push(
+				bindDrag({
+					element: el,
+					value: axis => valueFor(current!, axis) as never,
+					options: () => options,
+					setDragging: (isActive, event) => {
+						/*
+						`x`/`y` are captured before the layer turns on, so
+						releasing the drag resolves back to wherever the element
+						was picked up from rather than to an implicit zero.
+						*/
+						if (isActive) captureBaseValues(el, "dragging")
+						active.dragging = isActive
+						void applyTarget(resolveActiveTarget())
+						void event
+					},
+					dispatch: (type, detail) => dispatch(el, type, detail),
+				}),
+			)
+		}
+
 		return () => unbinds.forEach(unbind => unbind())
 	}
 
@@ -442,7 +677,12 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 		mount(el: Element) {
 			const stranded = current?.resolveExit
 
-			const ctx: MountContext = {element: el}
+			const ctx: MountContext = {
+				element: el,
+				values: new Map(),
+				unbindValues: new Map(),
+				running: new Set(),
+			}
 			current = ctx
 
 			/*
@@ -462,24 +702,63 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 			target and blocks every later `animate` update.
 			*/
 			exiting = false
-			active.inView = active.hover = active.press = false
+			active.inView = active.focus = active.hover = active.press = false
+			active.dragging = false
 			for (const key in baseValues) delete baseValues[key]
+
+			bindExternalValues(ctx)
 
 			const startTarget = getStartTarget()
 			applyStylesDirect(el, startTarget)
+
+			/*
+			Seed a MotionValue for everything the start target names, even if
+			nothing animates it yet. Motion rebuilds the whole `transform` from
+			the values it knows about, so a `scale` animated later would silently
+			drop an `x` that only `initial` had set, had it never been seeded.
+			*/
+			for (const key of Object.keys(targetValues(startTarget))) valueFor(ctx, key)
 
 			const target = resolveActiveTarget()
 			lastTarget = target
 			if (!sameValues(startTarget, target)) void applyTarget(target)
 
 			ctx.unbindGestures = bindGestures(el)
+
+			if (options.layout) {
+				ctx.unregisterLayout = registerLayout({
+					element: el,
+					offset: key => (ctx.values.get(key)?.get() as number | undefined) ?? 0,
+					transition: () => options.layoutTransition ?? options.transition,
+					apply: (key, from, transition) => {
+						const value = valueFor(ctx, key)
+						value.set(from)
+						value.start(animateMotionValue(key, value, 0 as never, transition as never))
+					},
+				})
+			}
+
 			mountedStates.set(el, state)
 
+			/*
+			Mounting this element may well have moved others — a new row pushes
+			the rest of a list down — so everything tracking its layout gets a
+			chance to notice.
+			*/
+			scheduleLayoutCheck()
+
 			return () => {
-				ctx.cancelAnimation?.()
+				for (const controls of ctx.running) controls.stop()
+				ctx.running.clear()
+				for (const unbind of ctx.unbindValues.values()) unbind()
+				ctx.unbindValues.clear()
+				ctx.values.clear()
 				ctx.unbindGestures?.()
+				ctx.unregisterLayout?.()
 				mountedStates.delete(el)
 				if (current === ctx) current = undefined
+				// and removing it moves whatever was below it back up
+				scheduleLayoutCheck()
 			}
 		},
 		update(newOptions: Options) {
@@ -493,11 +772,15 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 				current.unbindGestures = bindGestures(current.element)
 			}
 
+			if (current) bindExternalValues(current)
+
 			// an exiting element is on its way out — leave it on its exit target
 			if (exiting) return
 
 			const target = resolveActiveTarget()
 			if (!sameValues(target, lastTarget)) void applyTarget(target)
+			pruneBaseValues()
+			scheduleLayoutCheck()
 		},
 		startExit() {
 			exiting = true

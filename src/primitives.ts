@@ -5,17 +5,35 @@ import {createMotionState, createStyles, MotionState, StartStyles, style} from "
 import {Accessor, createEffect, createSignal, flush, onCleanup, untrack} from "solid-js"
 
 import {PresenceContext, PresenceContextState, tryUseContext} from "./presence.jsx"
+import {MotionConfigContext} from "./config.jsx"
 import {Options} from "./types.js"
 
 /** @internal */
 export function createAndBindMotionState(
 	el: () => Element,
-	options: Accessor<Options>,
+	raw_options: Accessor<Options>,
 	presence_state?: PresenceContextState,
 	parent_state?: MotionState,
 	/* the tag being rendered, so an SVG start target is built as attributes */
 	tag = "div",
 ): [MotionState, StartStyles] {
+	/*
+	Applied here rather than in the Motion component so every entry point —
+	`<Motion>`, `motion()` and `createMotion()` — inherits a `<MotionConfig>`
+	the same way. Element-level options always win over the config.
+	*/
+	const config = tryUseContext(MotionConfigContext)
+	const options: Accessor<Options> = config
+		? () => {
+				const own = raw_options()
+				return {
+					...own,
+					transition: own.transition ?? config.transition,
+					reducedMotion: own.reducedMotion ?? config.reducedMotion,
+				}
+			}
+		: raw_options
+
 	/*
 	The initial snapshot is deliberately a one-time read: `createMotionState`
 	stores it, and every later change arrives through the `update()` effect
@@ -47,9 +65,11 @@ export function createAndBindMotionState(
 				rendered at all. Two known causes, and the message names both
 				because the first one used to be reported as the second:
 
-				1. Several element children passed straight to <Presence>. It
-				   transitions one element at a time and only ever resolves the
-				   first, so later siblings are constructed but never inserted.
+				1. Several element children passed straight to
+				   <Presence exitBeforeEnter>. That mode transitions one element
+				   at a time and only ever resolves the first, so later siblings
+				   are constructed but never inserted. (A plain <Presence>
+				   renders them all.)
 				2. Two copies of solid-js in the app (a linked or duplicated
 				   dependency), leaving this component's effects on a different
 				   reactive graph than the one that set the ref. See
@@ -67,9 +87,10 @@ export function createAndBindMotionState(
 				console.warn(
 					"solid-motion: element ref was not set before mount, so this Motion was " +
 						"never rendered and will not animate. If it is one of several children " +
-						"passed directly to <Presence>, wrap them in a single parent element — " +
-						"Presence only renders the first child. Otherwise check for duplicate " +
-						"or mismatched copies of solid-js (e.g. with `npm ls solid-js`).",
+						"passed directly to <Presence exitBeforeEnter>, wrap them in a single " +
+						"parent element — that mode only renders the first child. Otherwise " +
+						"check for duplicate or mismatched copies of solid-js (e.g. with " +
+						"`npm ls solid-js`).",
 				)
 				return
 			}

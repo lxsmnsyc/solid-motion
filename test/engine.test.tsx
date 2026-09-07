@@ -1,4 +1,5 @@
 import {createStyles, createMotionState, mountedStates, normalizeTransition} from "../src/engine.js"
+import type {MotionEvent, Target} from "../src/index.jsx"
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -209,6 +210,155 @@ describe("createMotionState", () => {
 		el.dispatchEvent(pointer("pointerdown"))
 		await sleep(30)
 		expect(el.style.opacity).toBe("1")
+	})
+
+	test("A base value is released once no gesture layer introduces its key", async () => {
+		const el = mounted()
+		const state = createMotionState({hover: {scale: 1.2}, transition: {duration: 0.001}})
+		const unmount = state.mount(el)
+
+		// capture `scale`'s resting value, then revert to it
+		el.dispatchEvent(pointer("pointerenter"))
+		await sleep(50)
+		el.dispatchEvent(pointer("pointerleave"))
+		await sleep(50)
+
+		// `hover` no longer mentions `scale`, so it must stop being asserted
+		state.update({hover: {opacity: 0.5}, transition: {duration: 0.001}})
+		await sleep(50)
+
+		const targets: Target[] = []
+		el.addEventListener("motionstart", e => targets.push((e as MotionEvent).detail.target))
+
+		el.dispatchEvent(pointer("pointerenter"))
+		await sleep(50)
+
+		expect(targets).toHaveLength(1)
+		expect(targets[0]).toEqual({opacity: 0.5})
+
+		unmount()
+	})
+
+	test("A focus gesture layers over animate and reverts on blur", async () => {
+		const el = document.createElement("button")
+		document.body.appendChild(el)
+		const state = createMotionState({
+			animate: {opacity: 1},
+			focus: {opacity: 0.4},
+			transition: {duration: 0.001},
+		})
+		const unmount = state.mount(el)
+
+		el.focus()
+		await sleep(50)
+		expect(el.style.opacity).toBe("0.4")
+
+		el.blur()
+		await sleep(50)
+		expect(el.style.opacity).toBe("1")
+
+		unmount()
+		el.remove()
+	})
+
+	test("Press layers over focus, matching Motion's own precedence", async () => {
+		const el = document.createElement("button")
+		document.body.appendChild(el)
+		const state = createMotionState({
+			animate: {opacity: 1},
+			focus: {opacity: 0.4},
+			press: {opacity: 0.2},
+			transition: {duration: 0.001},
+		})
+		const unmount = state.mount(el)
+
+		el.focus()
+		await sleep(50)
+		el.dispatchEvent(pointer("pointerdown"))
+		await sleep(50)
+		expect(el.style.opacity).toBe("0.2")
+
+		// releasing falls back to the still-active focus layer
+		window.dispatchEvent(pointer("pointerup"))
+		await sleep(50)
+		expect(el.style.opacity).toBe("0.4")
+
+		unmount()
+		el.remove()
+	})
+
+	test("Retargeting one property leaves another mid-flight animation alone", async () => {
+		const el = mounted()
+		const state = createMotionState({
+			initial: {opacity: 1, x: 0},
+			animate: {opacity: 0, x: 100},
+			transition: {duration: 0.4},
+		})
+		const unmount = state.mount(el)
+
+		await sleep(80)
+		expect(Number(el.style.opacity)).toBeGreaterThan(0)
+		expect(Number(el.style.opacity)).toBeLessThan(1)
+
+		/*
+		`opacity` is not mentioned by the new target. Each property is animated
+		by its own MotionValue, so retargeting `x` no longer stops and replaces a
+		single element-wide animation — which used to strand `opacity` wherever
+		it had reached at that instant.
+		*/
+		state.update({
+			initial: {opacity: 1, x: 0},
+			animate: {x: 200},
+			transition: {duration: 0.4},
+		})
+
+		await sleep(500)
+		expect(el.style.opacity).toBe("0")
+		expect(el.style.transform).toBe("translateX(200px)")
+
+		unmount()
+	})
+
+	describe("reducedMotion", () => {
+		/*
+		Motion's own semantics: positional values (transforms, width/height/inset)
+		are applied instantly, everything else keeps animating. A fade still
+		conveys meaning without triggering vestibular discomfort.
+		*/
+		test("Applies positional values instantly and still animates the rest", async () => {
+			const el = mounted()
+			const state = createMotionState({
+				initial: {opacity: 1, x: 0},
+				animate: {opacity: 0, x: 100},
+				transition: {duration: 1},
+				reducedMotion: "always",
+			})
+			const unmount = state.mount(el)
+
+			await sleep(60)
+			// the movement is already done ...
+			expect(el.style.transform).toBe("translateX(100px)")
+			// ... while the fade is still only a fraction of the way through
+			expect(Number(el.style.opacity)).toBeGreaterThan(0.5)
+
+			unmount()
+		})
+
+		test("Animates normally when set to never", async () => {
+			const el = mounted()
+			const state = createMotionState({
+				initial: {x: 0},
+				animate: {x: 100},
+				transition: {duration: 1},
+				reducedMotion: "never",
+			})
+			const unmount = state.mount(el)
+
+			await sleep(60)
+			expect(el.style.transform).not.toBe("translateX(100px)")
+
+			unmount()
+		})
 	})
 
 	test("An exit target with no values reports nothing to wait for", () => {

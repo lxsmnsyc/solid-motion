@@ -1,6 +1,15 @@
-import {createSignal, Show} from "solid-js"
+import {createSignal, For, Show} from "solid-js"
 import type {JSX} from "@solidjs/web"
-import {Motion, Presence, motion, useScroll} from "../../src/index.jsx"
+import {
+	Motion,
+	MotionConfig,
+	Presence,
+	createMotionValue,
+	createSpring,
+	createTransform,
+	motion,
+	useScroll,
+} from "../../src/index.jsx"
 import type {AnimationOptions} from "../../src/index.jsx"
 
 /*
@@ -219,6 +228,243 @@ const HoverOverInitial = (): JSX.Element => (
 	/>
 )
 
+/*
+A focus gesture, gated on `:focus-visible` — so it fires for keyboard focus and
+not for a plain mouse click, matching the browser's own focus ring.
+*/
+const Focus = (): JSX.Element => (
+	/*
+	Inputs rather than buttons: Safari's default keyboard navigation only tabs
+	to text fields and links, so a button-based demo can't be driven from the
+	keyboard there. The trailing input gives Tab somewhere to go, so focus can
+	leave the element without leaving the page.
+	*/
+	<div>
+		<input data-testid="before" />
+		<Motion.input
+			data-testid="box"
+			style={{...box, border: "none"}}
+			animate={{opacity: 1}}
+			focus={{opacity: 0.3}}
+			transition={{duration: 0.1}}
+		/>
+		<input data-testid="after" />
+	</div>
+)
+
+/* `press` layers over `focus`, and releasing falls back to the still-focused state. */
+const FocusAndPress = (): JSX.Element => (
+	<Motion.button
+		data-testid="box"
+		style={{...box, border: "none"}}
+		animate={{opacity: 1}}
+		focus={{opacity: 0.6}}
+		press={{opacity: 0.2}}
+		transition={{duration: 0.1}}
+	/>
+)
+
+/* -------------------------------- config ---------------------------------- */
+
+/*
+`reducedMotion="always"` applies positional values instantly while everything
+else keeps animating — movement is what causes vestibular discomfort, a fade
+is not.
+*/
+const ReducedMotion = (): JSX.Element => (
+	<MotionConfig reducedMotion="always">
+		<Motion.div
+			data-testid="box"
+			style={box}
+			initial={{opacity: 1, x: 0}}
+			animate={{opacity: 0.2, x: 200}}
+			transition={{duration: 1.5}}
+		/>
+	</MotionConfig>
+)
+
+/* A `MotionConfig` transition is inherited by descendants that set none. */
+const ConfigTransition = (): JSX.Element => (
+	<MotionConfig transition={{duration: 1.5}}>
+		<Motion.div data-testid="box" style={box} initial={{opacity: 0}} animate={{opacity: 1}} />
+	</MotionConfig>
+)
+
+/* -------------------------------- layout ---------------------------------- */
+
+/*
+Reordering the list moves each row to a new position. With `layout`, each one
+animates there from wherever it was instead of jumping.
+*/
+const Layout = (): JSX.Element => {
+	const [items, setItems] = createSignal([1, 2, 3])
+	return (
+		<div>
+			<button data-testid="reorder" onClick={() => setItems(is => [...is].reverse())}>
+				Reverse
+			</button>
+			<For each={items()}>
+				{item => (
+					<Motion.div
+						data-testid={`item-${item}`}
+						layout
+						style={{...box, height: "40px", "margin-bottom": "8px"}}
+					/>
+				)}
+			</For>
+		</div>
+	)
+}
+
+/* Removing a row moves the ones below it up; `layout` animates that too. */
+const LayoutRemoval = (): JSX.Element => {
+	const [items, setItems] = createSignal([1, 2, 3])
+	return (
+		<div>
+			<button data-testid="remove" onClick={() => setItems(is => is.filter(i => i !== 1))}>
+				Remove first
+			</button>
+			<For each={items()}>
+				{item => (
+					<Motion.div
+						data-testid={`item-${item}`}
+						layout
+						layoutTransition={{duration: 0.6}}
+						style={{...box, height: "40px", "margin-bottom": "8px"}}
+					/>
+				)}
+			</For>
+		</div>
+	)
+}
+
+/* --------------------------------- drag ----------------------------------- */
+
+/* Free dragging on both axes, with a `dragging` layer while the pointer is down. */
+const Drag = (): JSX.Element => (
+	<Motion.div
+		data-testid="box"
+		style={box}
+		drag
+		dragging={{opacity: 0.5}}
+		dragMomentum={false}
+		transition={{duration: 0.1}}
+	/>
+)
+
+/* Constrained to one axis, and bounded — with elastic resistance past the bounds. */
+const DragConstrained = (): JSX.Element => (
+	<Motion.div
+		data-testid="box"
+		style={box}
+		drag="x"
+		dragConstraints={{left: 0, right: 150}}
+		dragElastic={0.4}
+		dragMomentum={false}
+	/>
+)
+
+/* Releasing with velocity carries the element on, then springs back to the bound. */
+const DragMomentum = (): JSX.Element => (
+	<Motion.div
+		data-testid="box"
+		style={box}
+		drag="x"
+		dragConstraints={{left: 0, right: 120}}
+		dragElastic={0}
+	/>
+)
+
+/* ------------------------------ motion values ----------------------------- */
+
+/*
+A MotionValue bound through `style` is written straight to the element on
+Motion's own frame loop, never touching Solid's graph — so dragging a slider at
+60fps re-renders nothing.
+*/
+const Values = (): JSX.Element => {
+	const x = createMotionValue(0)
+	const opacity = createTransform(x, [0, 200], [1, 0.2])
+	const smooth = createSpring(x, {stiffness: 200, damping: 30})
+
+	return (
+		<div>
+			<button data-testid="move" onClick={() => x.set(200)}>
+				Move
+			</button>
+			<Motion.div data-testid="box" style={{...box, x, opacity}} />
+			<Motion.div data-testid="trailing" style={{...box, background: "crimson", x: smooth}} />
+		</div>
+	)
+}
+
+/* An animation retargets the caller's own value rather than a private copy. */
+const ValuesAnimated = (): JSX.Element => {
+	const x = createMotionValue(0)
+	return (
+		<div>
+			<Status id="x" value={String(Math.round(x.get()))} />
+			<button data-testid="read" onClick={() => (document.title = String(x.get()))}>
+				Read
+			</button>
+			<Motion.div
+				data-testid="box"
+				style={{...box, x}}
+				animate={{x: 150}}
+				transition={{duration: 0.2}}
+			/>
+		</div>
+	)
+}
+
+/*
+Retargeting one property must leave another mid-flight animation alone: each is
+driven by its own MotionValue rather than one element-wide animation that has
+to be stopped and replaced.
+*/
+const IndependentProperties = (): JSX.Element => {
+	const [target, setTarget] = createSignal(100)
+	return (
+		<div>
+			<button data-testid="retarget" onClick={() => setTarget(220)}>
+				Retarget x
+			</button>
+			<Motion.div
+				data-testid="box"
+				style={box}
+				initial={{opacity: 1, x: 0}}
+				animate={{opacity: 0.1, x: target()}}
+				transition={{duration: 1.2}}
+			/>
+		</div>
+	)
+}
+
+/* ---------------------------- custom components --------------------------- */
+
+const Card = (props: {
+	ref?: (el: Element) => void
+	style?: JSX.CSSProperties | string
+	label?: string
+}): JSX.Element => (
+	<article data-testid="box" ref={props.ref} style={props.style}>
+		{props.label}
+	</article>
+)
+
+const MotionCard = Motion.create(Card)
+
+/* `Motion.create` wraps a component of your own, animating whatever it refs. */
+const CreateComponent = (): JSX.Element => (
+	<MotionCard
+		label="card"
+		style={box}
+		initial={{opacity: 0.2}}
+		animate={{opacity: 1}}
+		transition={{duration: 0.2}}
+	/>
+)
+
 /* --------------------------------- inView --------------------------------- */
 
 const InView = (): JSX.Element => {
@@ -420,6 +666,66 @@ const PresenceNestedExit = (): JSX.Element => {
 	)
 }
 
+/*
+A list under one `<Presence>`: removing an item animates just that item out,
+in place, while its siblings stay where they are.
+*/
+const PresenceList = (): JSX.Element => {
+	const [items, setItems] = createSignal([1, 2, 3])
+	return (
+		<div>
+			<button data-testid="remove" onClick={() => setItems(is => is.filter(i => i !== 2))}>
+				Remove 2
+			</button>
+			<Presence>
+				<For each={items()}>
+					{item => (
+						<Motion.div
+							data-testid={`item-${item}`}
+							style={{...box, height: "40px"}}
+							initial={{opacity: 1}}
+							exit={{opacity: 0, transition: {duration: 1}}}
+						/>
+					)}
+				</For>
+			</Presence>
+		</div>
+	)
+}
+
+/*
+Two siblings removed at once with very different exit durations — each leaves
+on its own schedule rather than both waiting for the slowest.
+*/
+const PresenceListStagger = (): JSX.Element => {
+	const [show, setShow] = createSignal(true)
+	return (
+		<div>
+			<button data-testid="toggle" onClick={() => setShow(s => !s)}>
+				Toggle
+			</button>
+			<Presence>
+				<Show when={show()}>
+					<Motion.div
+						data-testid="quick"
+						style={{...box, height: "40px"}}
+						initial={{opacity: 1}}
+						exit={{opacity: 0, transition: {duration: 0.15}}}
+					/>
+				</Show>
+				<Show when={show()}>
+					<Motion.div
+						data-testid="slow"
+						style={{...box, height: "40px", background: "crimson"}}
+						initial={{opacity: 1}}
+						exit={{opacity: 0, transition: {duration: 1.5}}}
+					/>
+				</Show>
+			</Presence>
+		</div>
+	)
+}
+
 /* `initial={false}` suppresses only the children present on the first render. */
 const PresenceInitialFalse = (): JSX.Element => {
 	const [show, setShow] = createSignal(false)
@@ -599,6 +905,19 @@ export const DEMOS: Record<string, () => JSX.Element> = {
 	"hover-and-press": HoverAndPress,
 	"hover-no-base": HoverNoBase,
 	"hover-over-initial": HoverOverInitial,
+	focus: Focus,
+	"focus-and-press": FocusAndPress,
+	"reduced-motion": ReducedMotion,
+	"config-transition": ConfigTransition,
+	"create-component": CreateComponent,
+	layout: Layout,
+	"layout-removal": LayoutRemoval,
+	drag: Drag,
+	"drag-constrained": DragConstrained,
+	"drag-momentum": DragMomentum,
+	values: Values,
+	"values-animated": ValuesAnimated,
+	"independent-properties": IndependentProperties,
 	"in-view": InView,
 	"in-view-with-hover": InViewWithHover,
 	"in-view-amount": InViewAmount,
@@ -607,6 +926,8 @@ export const DEMOS: Record<string, () => JSX.Element> = {
 	"presence-exit-before-enter": PresenceExitBeforeEnter,
 	"presence-parallel-swap": PresenceParallelSwap,
 	"presence-nested-exit": PresenceNestedExit,
+	"presence-list": PresenceList,
+	"presence-list-stagger": PresenceListStagger,
 	"presence-initial-false": PresenceInitialFalse,
 	variants: Variants,
 	"variant-inheritance": VariantInheritance,
