@@ -121,13 +121,13 @@ export const Presence: FlowComponent<{
 							mode: props.exitBeforeEnter ? "out-in" : "parallel",
 							onExit(el, done) {
 								/*
-								onExit/onEnter run outside Solid's own scheduler — so signal
-								writes here need an explicit flush to reach dependent effects
-								(e.g. a sibling Motion's mount-gating effect) before this
-								returns.
+								No flush() here: onExit runs from inside createSwitchTransition's
+								own render effect, so a flush is already in progress and calling
+								it again is a documented no-op (FLUSH_IN_EFFECT_CALLBACK). This
+								write is picked up by that same flush's continuation, which is
+								what a sibling Motion's mount-gating effect reads.
 								*/
 								setMount(false)
-								flush()
 
 								/*
 								Load-bearing ordering: Solid parks disposal on
@@ -154,16 +154,17 @@ export const Presence: FlowComponent<{
 									/*
 									`done` (transition-group's own callback) writes the
 									signal that actually removes this element from the
-									rendered list — also outside Solid's scheduler, so it
-									needs its own flush to take effect before callers see it.
+									rendered list. This runs from a promise continuation,
+									outside Solid's scheduler, so the write is run *inside*
+									a synchronous flush scope — `flush(fn)` drains it before
+									returning instead of leaving a queued microtask flush.
 									*/
-									done()
-									flush()
+									flush(done)
 								})
 							},
 							onEnter(_, done) {
+								// same as onExit: already inside the flush that runs effects
 								setMount(true)
-								flush()
 								done()
 							},
 						},

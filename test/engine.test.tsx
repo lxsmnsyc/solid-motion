@@ -160,6 +160,32 @@ describe("createMotionState", () => {
 		unmount()
 	})
 
+	test("A gesture reverts to the initial value, not the property's zero value", async () => {
+		const el = mounted()
+		const state = createMotionState({
+			initial: {scale: 2},
+			hover: {scale: 3},
+			transition: {duration: 0.001},
+		})
+		const unmount = state.mount(el)
+		expect(el.style.transform).toBe("scale(2)")
+
+		el.dispatchEvent(pointer("pointerenter"))
+		await sleep(50)
+		expect(el.style.transform).toBe("scale(3)")
+
+		/*
+		A transform can only be read back out of a computed matrix, so the base
+		value falls back to the property's identity — which would revert this to
+		`scale(1)` rather than to the `initial` the element was rendered with.
+		*/
+		el.dispatchEvent(pointer("pointerleave"))
+		await sleep(50)
+		expect(el.style.transform).toBe("scale(2)")
+
+		unmount()
+	})
+
 	test("Gestures are rebound when one is added and unbound on unmount", async () => {
 		const el = mounted()
 		const state = createMotionState({animate: {opacity: 1}, transition: {duration: 0.001}})

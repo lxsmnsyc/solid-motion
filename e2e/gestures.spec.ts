@@ -1,5 +1,5 @@
 import {expect, test} from "@playwright/test"
-import {opacity, openDemo, settled, translateX} from "./helpers.js"
+import {computed, opacity, openDemo, scaleOf, settled, translateX} from "./helpers.js"
 
 test.describe("gestures", () => {
 	test("hover animates in and back out", async ({page}) => {
@@ -65,8 +65,32 @@ test.describe("gestures", () => {
 		await box.hover()
 		expect(Number(await settled(box))).toBeCloseTo(0.4, 1)
 
-		await page.mouse.move(0, 0)
+		await page.mouse.move(600, 600)
 		expect(Number(await settled(box))).toBeCloseTo(1, 1)
+	})
+
+	/*
+	The resting value has to come from `initial` when it sets one, rather than
+	from the property's zero value. Transforms are the case that breaks: they
+	can only be read back out of a computed matrix, so the identity value gets
+	used as a fallback — which silently reverts `scale: 2` to `scale: 1`.
+	*/
+	test("a gesture reverts to initial, not to the property's zero value", async ({page}) => {
+		await openDemo(page, "hover-over-initial")
+
+		const box = page.getByTestId("box")
+		expect(await scaleOf(box)).toBeCloseTo(2, 1)
+
+		await box.hover()
+		await settled(box, "transform")
+		expect(await scaleOf(box)).toBeCloseTo(3, 1)
+		expect(Number(await computed(box, "opacity"))).toBeCloseTo(0.9, 1)
+
+		// clear of the box entirely: `scale` makes it much larger than its layout box
+		await page.mouse.move(600, 600)
+		await settled(box, "transform")
+		expect(await scaleOf(box)).toBeCloseTo(2, 1)
+		expect(Number(await computed(box, "opacity"))).toBeCloseTo(0.3, 1)
 	})
 })
 

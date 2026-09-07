@@ -430,6 +430,32 @@ describe("Presence", () => {
 		expect(screen.queryByTestId("second")).toBeNull()
 	})
 
+	test("sibling Motion children warn instead of taking down the app", async () => {
+		/*
+		Only the first child is ever resolved, so a later `Motion` sibling is
+		constructed but never inserted and its ref is never set. That used to
+		throw — which halts Solid's reactive system for the whole app — and
+		blamed "more than one copy of solid-js", the wrong cause for by far the
+		most common way of reaching it.
+		*/
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+		render(() => (
+			<Presence>
+				<Motion.div data-testid="first" />
+				<Motion.div data-testid="second" />
+			</Presence>
+		))
+
+		expect(await screen.findByTestId("first")).toBeTruthy()
+		expect(screen.queryByTestId("second")).toBeNull()
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("Presence only renders the first child"),
+		)
+
+		warn.mockRestore()
+	})
+
 	test("sibling Motion elements wrapped in a common parent all render", async () => {
 		render(() => (
 			<Presence>

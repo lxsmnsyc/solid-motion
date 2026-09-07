@@ -1,6 +1,6 @@
 import {Dynamic} from "@solidjs/web"
 import type {JSX} from "@solidjs/web"
-import {merge, omit, createContext} from "solid-js"
+import {merge, omit, untrack, createContext} from "solid-js"
 import {combineStyle} from "@solid-primitives/props"
 import {MotionState} from "./engine.js"
 
@@ -33,7 +33,15 @@ export const MotionComponent = (
 	},
 ): JSX.Element => {
 	const attrs = omit(props, ...OPTION_KEYS, ...ATTR_KEYS)
-	const tag = props.tag || "div"
+	/*
+	Read once, untracked. The rendered tag decides how the *start* target is
+	built (SVG geometry as attributes vs. HTML styles), which is a one-shot
+	decision made before anything is mounted — and swapping an element's tag
+	mid-life would mean replacing the node, not updating it. Reading it
+	reactively here would only earn a STRICT_READ_UNTRACKED warning for a
+	subscription nothing can act on.
+	*/
+	const tag = untrack(() => props.tag) || "div"
 
 	const [state, startStyles] = createAndBindMotionState(
 		() => root,
@@ -91,7 +99,7 @@ const tagComponents = new Map<string, MotionProxyComponent<any>>()
  * - `animate` a target of values to animate to. Accepts all the same values and keyframes as Motion One's [animate function](https://motion.dev/dom/animate). This prop is **reactive** – changing it will animate the transition element to the new state.
  * - `transition` for changing type of animation
  * - `initial` a target of values to animate from when the element is first rendered.
- * - `exit` a target of values to animate to when the element is removed. The element must be a direct child of the `<Presence>` component.
+ * - `exit` a target of values to animate to when the element is removed. Requires a `<Presence>` ancestor — the element can sit anywhere inside the subtree `Presence` transitions, not just at its root.
  *
  * @example
  * ```tsx

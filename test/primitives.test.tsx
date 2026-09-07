@@ -1,6 +1,7 @@
-import {createRoot, createSignal, Show} from "solid-js"
+import {createRoot, createSignal, flush, Show} from "solid-js"
 import type {JSX} from "@solidjs/web"
 import {screen, render} from "@solidjs/testing-library"
+import {mountedStates} from "../src/engine.js"
 import {Presence, VariantDefinition, createMotion, motion, useScroll} from "../src/index.jsx"
 
 const duration = 0.001
@@ -97,6 +98,33 @@ describe("motion ref factory", () => {
 			setTimeout(() => resolve(ref), 500)
 		})
 		expect(element.style.opacity).not.toEqual("0.9")
+	})
+
+	test("Ties the motion state's lifetime to the owner that created the ref", () => {
+		let ref!: HTMLDivElement
+		/*
+		Solid 2 invokes a ref callback with no owner. If the state's effects are
+		created in there they belong to nothing, are never disposed, and the
+		element stays registered — and gesture-bound — for the lifetime of the page.
+		*/
+		const dispose = createRoot(dispose => {
+			render(() => (
+				<div
+					ref={[
+						el => (ref = el),
+						motion(() => ({animate: {opacity: 0.5}, transition: {duration}})),
+					]}
+				/>
+			))
+			return dispose
+		})
+
+		flush()
+		expect(mountedStates.has(ref)).toBe(true)
+
+		dispose()
+		flush()
+		expect(mountedStates.has(ref)).toBe(false)
 	})
 
 	describe("with Presence", () => {

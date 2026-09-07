@@ -36,6 +36,14 @@ export async function settled(locator: Locator, property = "opacity"): Promise<s
 	throw new Error(`"${property}" never settled (last value ${previous})`)
 }
 
+/** The uniform scale factor of an element's computed transform. */
+export async function scaleOf(locator: Locator): Promise<number> {
+	const transform = await computed(locator, "transform")
+	if (transform === "none") return 1
+	const values = transform.match(/matrix\(([^)]+)\)/)?.[1]?.split(",")
+	return Number(values?.[0] ?? 1)
+}
+
 /** The horizontal translation of an element's computed transform, in pixels. */
 export async function translateX(locator: Locator): Promise<number> {
 	const transform = await computed(locator, "transform")

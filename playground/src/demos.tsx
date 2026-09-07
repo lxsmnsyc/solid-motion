@@ -203,6 +203,22 @@ const HoverNoBase = (): JSX.Element => (
 	<Motion.div data-testid="box" style={box} hover={{opacity: 0.4}} transition={{duration: 0.1}} />
 )
 
+/*
+The same, but the resting value comes from `initial` rather than from the
+element's own default. Leaving the gesture has to return to `initial`, not to
+the property's zero value — and a transform is the case that gets this wrong
+most easily, since it can only be read back out of a computed matrix.
+*/
+const HoverOverInitial = (): JSX.Element => (
+	<Motion.div
+		data-testid="box"
+		style={box}
+		initial={{scale: 2, opacity: 0.3}}
+		hover={{scale: 3, opacity: 0.9}}
+		transition={{duration: 0.1}}
+	/>
+)
+
 /* --------------------------------- inView --------------------------------- */
 
 const InView = (): JSX.Element => {
@@ -582,6 +598,7 @@ export const DEMOS: Record<string, () => JSX.Element> = {
 	press: Press,
 	"hover-and-press": HoverAndPress,
 	"hover-no-base": HoverNoBase,
+	"hover-over-initial": HoverOverInitial,
 	"in-view": InView,
 	"in-view-with-hover": InViewWithHover,
 	"in-view-amount": InViewAmount,

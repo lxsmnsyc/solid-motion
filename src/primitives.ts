@@ -2,7 +2,7 @@ import {scrollInfo} from "framer-motion/dom"
 import {isServer} from "@solidjs/web"
 
 import {createMotionState, createStyles, MotionState, StartStyles, style} from "./engine.js"
-import {Accessor, createEffect, createSignal, flush, onCleanup} from "solid-js"
+import {Accessor, createEffect, createSignal, flush, onCleanup, untrack} from "solid-js"
 
 import {PresenceContext, PresenceContextState, tryUseContext} from "./presence.jsx"
 import {Options} from "./types.js"
@@ -16,9 +16,17 @@ export function createAndBindMotionState(
 	/* the tag being rendered, so an SVG start target is built as attributes */
 	tag = "div",
 ): [MotionState, StartStyles] {
-	const state = createMotionState(
-		presence_state?.initial === false ? {...options(), initial: false} : options(),
-		parent_state,
+	/*
+	The initial snapshot is deliberately a one-time read: `createMotionState`
+	stores it, and every later change arrives through the `update()` effect
+	below. Tracking it here would subscribe the component body itself
+	(STRICT_READ_UNTRACKED) to props that are already handled reactively.
+	*/
+	const state = untrack(() =>
+		createMotionState(
+			presence_state?.initial === false ? {...options(), initial: false} : options(),
+			parent_state,
+		),
 	)
 
 	/*
@@ -34,24 +42,43 @@ export function createAndBindMotionState(
 			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- `el_ref` is typed non-nullable, but see the comment below for why this still needs a runtime check
 			if (!el_ref) {
 				/*
-				Only reachable if the ref hasn't been assigned by the time this effect
-				runs — normally impossible, since Solid assigns refs synchronously
-				during render, before any effect fires. Historically this has only
-				been seen when an app ends up with two copies of solid-js active at
-				once (e.g. a linked/duplicated dependency), so this component's
-				effects run on a different reactive graph than the one that set the
-				ref. See https://github.com/solidjs-community/solid-motionone/issues/10
+				The ref is assigned synchronously during render, before any effect
+				fires, so reaching here means this component's JSX was never
+				rendered at all. Two known causes, and the message names both
+				because the first one used to be reported as the second:
+
+				1. Several element children passed straight to <Presence>. It
+				   transitions one element at a time and only ever resolves the
+				   first, so later siblings are constructed but never inserted.
+				2. Two copies of solid-js in the app (a linked or duplicated
+				   dependency), leaving this component's effects on a different
+				   reactive graph than the one that set the ref. See
+				   https://github.com/solidjs-community/solid-motionone/issues/10
 				*/
-				throw new Error(
-					"solid-motion: element ref was not set before mount. This usually means " +
-						"your app has more than one copy of solid-js installed — check for " +
-						"duplicate/mismatched solid-js versions (e.g. with `npm ls solid-js`).",
+				/*
+				Warn rather than throw: an uncaught error here halts Solid's
+				reactive system for the entire app (REACTIVITY_HALTED, "no
+				further updates will be processed"), which is a wildly
+				disproportionate response to one mis-nested child. There is
+				nothing to animate without an element, so skip this mount and
+				let the rest of the page keep working.
+				*/
+				// eslint-disable-next-line no-console -- a silent no-op here is undebuggable
+				console.warn(
+					"solid-motion: element ref was not set before mount, so this Motion was " +
+						"never rendered and will not animate. If it is one of several children " +
+						"passed directly to <Presence>, wrap them in a single parent element — " +
+						"Presence only renders the first child. Otherwise check for duplicate " +
+						"or mismatched copies of solid-js (e.g. with `npm ls solid-js`).",
 				)
+				return
 			}
 			const unmount = state.mount(el_ref)
 
 			return () => {
-				if (presence_state && options().exit) {
+				// an effect's cleanup runs untracked; this asks what `exit` is *now*,
+				// and must not try to subscribe to it on the way out
+				if (presence_state && untrack(() => options().exit)) {
 					const exiting = state.startExit()
 					if (exiting) {
 						/*
@@ -125,8 +152,35 @@ export function createMotion(
  */
 export function motion(options: Accessor<Options>): (el: Element) => void {
 	const presence_state = tryUseContext(PresenceContext)
+
+	/*
+	A two-phase directive factory, which is the shape Solid 2 prescribes for
+	refs:
+
+	- Setup (here) is owned by whichever component called the factory, and is
+	  where every reactive primitive is created — so they are disposed with it.
+	  Solid invokes a ref callback with *no* owner, so creating them in there
+	  would leave them undisposed (NO_OWNER_EFFECT): gestures would stay bound
+	  after the element was gone, its entry would linger in `mountedStates`,
+	  and an in-flight animation would never be cancelled.
+	- Apply (the returned callback) is unowned and only writes to the DOM.
+
+	The mount effect created below runs after the render phase, by which point
+	the ref has already assigned `element`.
+	*/
+	let element: Element | undefined
+	const [state] = createAndBindMotionState(() => element!, options, presence_state)
+
 	return el => {
-		createMotion(el, options, presence_state)
+		element = el
+		/*
+		The start target can only be built here: the element's tag decides
+		whether SVG geometry is written as attributes or as styles, and the tag
+		isn't knowable until the ref fires.
+		*/
+		const {style: styles, attrs} = createStyles(state.getTarget(), el.tagName.toLowerCase())
+		for (const key in styles) style.set(el, key, styles[key])
+		for (const key in attrs) el.setAttribute(key, String(attrs[key]))
 	}
 }
 
@@ -183,19 +237,20 @@ export function useScroll(options?: ScrollInfoOptions): {
 			scrollInfo(info => {
 				/*
 				scrollInfo's callback fires from Motion's own rAF-driven scheduler,
-				entirely outside Solid's — same situation as presence.tsx's
-				onExit/onEnter, and needs the same explicit flush() so dependent
-				effects/DOM actually update instead of the write sitting pending.
+				entirely outside Solid's, so these writes run inside an explicit
+				synchronous flush scope — otherwise a frame's worth of scroll
+				values would sit pending until some unrelated flush drained them.
 
 				info.x/info.y are also reused/mutated in place across frames by
 				Motion internally, so they're shallow-copied here — writing the
 				same object reference into a signal would never trip Solid's
 				Object.is equality check and the signal would look unchanged.
 				*/
-				setTime(info.time)
-				setScrollX({...info.x})
-				setScrollY({...info.y})
-				flush()
+				flush(() => {
+					setTime(info.time)
+					setScrollX({...info.x})
+					setScrollY({...info.y})
+				})
 			}, options),
 		)
 	}

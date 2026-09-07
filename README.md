@@ -33,6 +33,7 @@ Motion for Solid is a small animation library for Solid 2.0. It takes advantage 
 - [Scroll-linked animations](#scroll-linked-animations)
 - [TypeScript](#typescript)
 - [Examples](#examples)
+- [Testing](#testing)
 
 ## Installation
 
@@ -167,7 +168,7 @@ Every `Motion` in the exiting subtree takes part, not just the top one: when des
 </Presence>
 ```
 
-`Presence` transitions **one element at a time**: it resolves the first element among its children and ignores the rest, so siblings passed to it directly won't work. Wrap them in a common parent instead.
+`Presence` transitions **one element at a time**: it resolves the first element among its children and ignores the rest, so siblings passed to it directly won't work. Wrap them in a common parent instead. A `Motion` that ends up as a later sibling is never rendered at all, and warns to the console saying so.
 
 ```tsx
 // ✗ only the first is ever rendered
@@ -370,6 +371,8 @@ import {motion} from "solid-motion"
 
 The options accessor is reactive, the same as a `<Motion>` component's props. It can be composed with other refs using Solid's array-ref syntax: `ref={[otherRef, motion(() => ({...}))]}`.
 
+Call `motion()` from inside a component (or another owned scope). It creates its effects there, which ties the animation's lifetime to that component: the element is unregistered, its gestures unbound and any running animation cancelled when the component is disposed. The same applies to `createMotion` and `useScroll` — called outside an owned scope, Solid warns (`NO_OWNER_EFFECT` / `NO_OWNER_CLEANUP`) and there is nothing to clean them up.
+
 **`createMotion`** — the imperative form, for when you already have an `Element` reference:
 
 ```tsx
@@ -377,6 +380,8 @@ import {createMotion} from "solid-motion"
 
 createMotion(myElement, () => ({animate: {opacity: 1}}))
 ```
+
+It returns a [`MotionState`](#typescript) and, like `motion`, must be called from an owned scope.
 
 ## Scroll-linked animations
 
@@ -423,6 +428,11 @@ The following types are exported for typing your own components and helpers:
 - `MotionEvent`, `CustomPointerEvent`, `ViewEvent` — the `CustomEvent` subtypes passed to the [event handlers](#event-handlers).
 - `ViewportOptions` — the shape of `inViewOptions`.
 - `MotionComponentProps` — the full props type for the `<Motion>` component, including children and event handlers.
+- `MotionState` — what `createMotion` returns. `getTarget()` and `getOptions()` read the element's start target and current options; the rest is driven by this library.
+- `PresenceContextState` — the value carried by `PresenceContext`, and the type of `createMotion`'s optional third argument.
+- `PresenceExitRegistry` — how an exiting element hands itself to its enclosing `Presence`; reachable through `PresenceContextState["exits"]`.
+
+`PresenceContext` itself is exported too, for reading the enclosing `Presence` from a component of your own. Note that Solid 2's `useContext` throws when there is no provider, so guard the read if the component can render outside a `Presence`.
 
 ## Examples
 

@@ -1,4 +1,6 @@
 export * from "./types.js"
 export {Motion} from "./motion.jsx"
+export type {MotionState} from "./engine.js"
 export {Presence, PresenceContext} from "./presence.jsx"
+export type {PresenceContextState, PresenceExitRegistry} from "./presence.jsx"
 export {createMotion, motion, useScroll} from "./primitives.js"

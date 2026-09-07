@@ -17,9 +17,16 @@ import type {Options, Target, VariantDefinition} from "./types.js"
 /** @internal */
 export const mountedStates = new WeakMap<Element, MotionState>()
 
-/** @internal */
+/**
+ * The animation state bound to a single element. Returned by `createMotion`,
+ * so it is nameable by consumers — but everything on it apart from
+ * `getTarget`/`getOptions` is driven by this library's own components and
+ * primitives, not intended to be called by hand.
+ */
 export interface MotionState {
+	/** @internal binds the state to an element, returning its teardown */
 	mount(el: Element): () => void
+	/** @internal applies a new set of options, animating if the target changed */
 	update(options: Options): void
 	/**
 	 * @internal Begins the exit animation, returning a promise that settles once
@@ -28,7 +35,9 @@ export interface MotionState {
 	 * microtask on an already-resolved promise.
 	 */
 	startExit(): Promise<void> | null
+	/** The style this element renders with before anything animates. */
 	getTarget(): Target
+	/** The options currently in effect. */
 	getOptions(): Options
 	/** @internal the resolved `initial` variant key, inherited from a parent Motion if unset here */
 	getInitialVariantKey(): string | undefined
@@ -376,8 +385,21 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 		)
 	}
 
-	/** Reads what the element currently shows for a value nothing else drives. */
+	/** Reads what the element should return to for a value nothing else drives. */
 	function readBaseValue(el: Element, key: string): unknown {
+		/*
+		`initial` describes the element's resting appearance, so it wins over
+		anything read back off the element. That matters most for transforms:
+		they can only be recovered from the computed matrix, and inverting one
+		is lossy (`scale` and a matching `scaleX`/`scaleY` pair are
+		indistinguishable), so the property's identity value is used instead —
+		which is simply wrong whenever `initial` set a transform. Without this,
+		`initial={{scale: 2}} hover={{scale: 3}}` reverts to `scale(1)`.
+		*/
+		const start = targetValues(getStartTarget())[key]
+		// a keyframe list renders statically as its first frame — see createStyles()
+		if (start !== undefined) return Array.isArray(start) ? start[0] : start
+
 		if (transformProps.has(key)) return defaultTransformValue(key)
 		const computed = window.getComputedStyle(el)
 		return key.startsWith("--")
