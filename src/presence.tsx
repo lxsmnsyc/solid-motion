@@ -4,6 +4,7 @@ import {
 	createContext,
 	createSignal,
 	flush,
+	onSettled,
 	useContext,
 	type Context,
 	type FlowComponent,
@@ -74,7 +75,7 @@ export const Presence: FlowComponent<{
 	Every Motion currently animating out under this Presence, whether it's the
 	transitioning element itself or any descendant of it. Attribution is by DOM
 	containment rather than a parent pointer, so it works for a plain wrapper
-	element as well as for a Motion root.
+	element just as well as for a Motion root.
 	*/
 	const pending = new Set<{element: Element; finished: Promise<void>}>()
 	/*
@@ -120,10 +121,10 @@ export const Presence: FlowComponent<{
 							mode: props.exitBeforeEnter ? "out-in" : "parallel",
 							onExit(el, done) {
 								/*
-								onExit/onEnter run outside Solid's own scheduler — so
-								signal writes here need an explicit flush to reach
-								dependent effects (e.g. a sibling Motion's mount-gating
-								effect) before this returns.
+								onExit/onEnter run outside Solid's own scheduler — so signal
+								writes here need an explicit flush to reach dependent effects
+								(e.g. a sibling Motion's mount-gating effect) before this
+								returns.
 								*/
 								setMount(false)
 								flush()
@@ -135,10 +136,9 @@ export const Presence: FlowComponent<{
 								run(EFFECT_RENDER) — and EFFECT_RENDER is what invokes
 								createSwitchTransition's effect, and so this callback.
 								Every exiting Motion in the subtree has therefore already
-								handed itself to `exits` by now, which is why no
-								mount-time registration is needed. Should that ordering
-								ever change, this sees an empty set and the nested-exit
-								tests fail loudly.
+								handed itself to `exits` by now, which is why no mount-time
+								registration is needed. Should that ordering ever change,
+								this sees an empty set and the nested-exit tests fail loudly.
 								*/
 								const exiting = exits.pendingIn(el)
 
@@ -172,6 +172,23 @@ export const Presence: FlowComponent<{
 			</PresenceContext>
 		)
 
-	queueMicrotask(() => (state.initial = true))
+	/*
+	`initial={false}` only suppresses the enter animation of the children present
+	on the *first* render; anything added later animates in normally. That means
+	flipping the flag once the first render is done, which is exactly what
+	`onSettled` (Solid 2.0's replacement for 1.x `onMount`) schedules: the next
+	point at which the current reactive activity has settled. A bare
+	`queueMicrotask` only approximates that by piggybacking on the JS microtask
+	queue, which knows nothing about Solid's scheduler and fires whether or not
+	the render it is waiting on has actually finished.
+
+	`state.initial` is deliberately a plain field rather than a signal — children
+	read it once, untracked, while constructing their own MotionState, and it
+	must never re-run anything when it flips.
+	*/
+	onSettled(() => {
+		state.initial = true
+	})
+
 	return render
 }

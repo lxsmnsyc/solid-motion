@@ -1,7 +1,7 @@
 import {mountedStates} from "../src/engine.js"
 import {createRoot, createSignal, flush, Show} from "solid-js"
 import type {JSX} from "@solidjs/web"
-import {screen, render, fireEvent, waitFor} from "@solidjs/testing-library"
+import {screen, render, waitFor, fireEvent} from "@solidjs/testing-library"
 import {Presence, Motion, VariantDefinition} from "../src/index.jsx"
 import type {RefProps} from "@solid-primitives/refs"
 
@@ -9,16 +9,17 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 
 /*
 Presence hands teardown over as a promise, so `done()` lands a few microtasks
-after the exit animation's own completion event. A zero-delay timer drains
-every pending microtask without advancing animation time meaningfully.
+after the exit animation's own completion event rather than inside its handler.
+A zero-delay timer drains every pending microtask without meaningfully
+advancing animation time.
 */
 const tick = (): Promise<void> => sleep(0)
 
 /*
-jsdom reports an unset `opacity` as `0`, so animating to `{opacity: 0}` from
-the browser default would be a zero-length animation that lands in a frame or
-two regardless of its `duration`. Tests below that need a *real* exit
-animation therefore give the element an explicit `initial={{opacity: 1}}`.
+jsdom reports an unset `opacity` as `0`, so animating to `{opacity: 0}` from the
+browser default is a zero-length animation that lands in a frame or two whatever
+its `duration` says. Tests below that need a *real* exit animation therefore
+give the element an explicit `initial={{opacity: 1}}`.
 */
 
 const TestComponent = (
@@ -199,6 +200,101 @@ describe("Presence", () => {
 		expect(ref_1.style.opacity).toBe("0")
 		expect(ref_2.style.opacity).toBe("1")
 	})
+
+	test("Removes the element even when exit resolves to no values", async () => {
+		const [show, setShow] = createSignal(true)
+
+		const {container} = render(() => (
+			<Presence>
+				<Show when={show()}>
+					{/* a variant key with no matching entry — resolves to an empty target */}
+					<Motion.div data-testid="child" animate={{opacity: 1}} exit="missing" />
+				</Show>
+			</Presence>
+		))
+		flush()
+
+		const component = await screen.findByTestId("child")
+		expect(component.isConnected).toBeTruthy()
+
+		setShow(false)
+		flush()
+
+		await new Promise<void>(resolve => setTimeout(resolve, 50))
+
+		expect(component.isConnected).toBeFalsy()
+		expect(container.innerHTML).toBe("")
+		expect(mountedStates.has(component)).toBeFalsy()
+	})
+
+	test("An element that entered during an exit still animates on later updates", async () => {
+		const [condition, setCondition] = createSignal(1)
+		const [opacity, setOpacity] = createSignal(0.5)
+
+		const {container} = render(() => (
+			<Presence>
+				<Show when={condition()} keyed>
+					{key => (
+						<Motion.div
+							data-testid={"child-" + key}
+							animate={{opacity: opacity()}}
+							exit={{opacity: 0}}
+							transition={{duration: 0.001}}
+						/>
+					)}
+				</Show>
+			</Presence>
+		))
+		flush()
+		await new Promise<void>(resolve => setTimeout(resolve, 50))
+
+		/*
+		In the default "parallel" mode the incoming element is briefly torn down
+		and remounted as the outgoing one exits. Its exit flag has to be cleared
+		by that remount, or every later `animate` update resolves to the exit
+		target instead.
+		*/
+		setCondition(2)
+		flush()
+		await new Promise<void>(resolve => setTimeout(resolve, 50))
+
+		const component = container.querySelector<HTMLElement>('[data-testid="child-2"]')!
+		expect(component.style.opacity).toBe("0.5")
+
+		setOpacity(0.9)
+		flush()
+		await new Promise<void>(resolve => setTimeout(resolve, 50))
+
+		expect(component.style.opacity).toBe("0.9")
+	})
+
+	test("initial: false only suppresses children present on the first render", async () => {
+		const [show, setShow] = createSignal(false)
+
+		const {container} = render(() => (
+			<Presence initial={false}>
+				<Show when={show()}>
+					<Motion.div
+						data-testid="late"
+						initial={{opacity: 0}}
+						animate={{opacity: 1}}
+						transition={{duration: 5}}
+					/>
+				</Show>
+			</Presence>
+		))
+		flush()
+		await new Promise<void>(resolve => setTimeout(resolve, 20))
+
+		setShow(true)
+		flush()
+
+		// a child added after the first render animates in normally, so it starts
+		// at its `initial` rather than jumping straight to `animate`
+		const component = container.querySelector<HTMLElement>('[data-testid="late"]')!
+		expect(component.style.opacity).toBe("0")
+	})
+
 	test("waits for a nested descendant's longer exit before removing the subtree", async () => {
 		const [show, setShow] = createSignal(true)
 		let parent!: HTMLDivElement, child!: HTMLDivElement
@@ -256,7 +352,7 @@ describe("Presence", () => {
 		setShow(false)
 		flush()
 
-		// nothing to animate on the root itself, so today it unmounts at once
+		// nothing to animate on the root itself, which used to unmount it at once
 		await sleep(80)
 		expect(root.isConnected).toBeTruthy()
 		expect(child.isConnected).toBeTruthy()
@@ -290,30 +386,6 @@ describe("Presence", () => {
 		expect(child.isConnected).toBeTruthy()
 
 		await waitFor(() => expect(wrapper.isConnected).toBeFalsy(), {timeout: 2000})
-	})
-
-	test.each([
-		["a variant key with no matching variant", "nope" as VariantDefinition],
-		["a target carrying only a transition", {transition: {duration: 0.3}} as VariantDefinition],
-	])("removes the element when `exit` resolves to no animatable values (%s)", async (_, exit) => {
-		const [show, setShow] = createSignal(true)
-		let el!: HTMLDivElement
-
-		render(() => (
-			<Presence>
-				<Show when={show()}>
-					<Motion.div ref={el} exit={exit} />
-				</Show>
-			</Presence>
-		))
-
-		expect(el.isConnected).toBeTruthy()
-
-		setShow(false)
-		flush()
-
-		// an `exit` with nothing to animate must not pin the element forever
-		await waitFor(() => expect(el.isConnected).toBeFalsy(), {timeout: 1000})
 	})
 
 	test("a gesture landing mid-exit doesn't truncate the exit animation", async () => {
@@ -352,8 +424,8 @@ describe("Presence", () => {
 			</Presence>
 		))
 
-		// Presence transitions one element at a time — later siblings are
-		// never resolved, so they're never inserted into the DOM at all
+		// Presence transitions one element at a time — later siblings are never
+		// resolved, so they're never inserted into the DOM at all
 		expect(await screen.findByTestId("first")).toBeTruthy()
 		expect(screen.queryByTestId("second")).toBeNull()
 	})

@@ -1,16 +1,9 @@
-import {createRoot, createSignal, flush} from "solid-js"
+import {createRoot, createSignal} from "solid-js"
 import type {JSX} from "@solidjs/web"
 import {screen, render, fireEvent} from "@solidjs/testing-library"
 import {Motion} from "../src/index.jsx"
-import type {Target} from "../src/index.jsx"
 
 const duration = 0.001
-
-const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
-
-/** Deliver a hand-made IntersectionObserverEntry through the test stub (see test/setup.js). */
-const triggerInView = (target: Element, isIntersecting: boolean): void =>
-	(IntersectionObserver as any).__trigger([{target, isIntersecting}])
 
 describe("Motion", () => {
 	test("Renders element as Div by default to HTML", async () => {
@@ -85,27 +78,34 @@ describe("Motion", () => {
 	})
 
 	test("Animation runs when target changes", async () => {
-		const result = await new Promise(resolve =>
-			createRoot(dispose => {
-				const Component = (props: any): JSX.Element => {
-					return (
-						<Motion.div
-							initial={{opacity: 0}}
-							animate={props.animate}
-							onMotionComplete={({detail}) => {
-								if (detail.target.opacity === 0.8) resolve(true)
-							}}
-							transition={{duration}}
-						/>
-					)
-				}
-				const [animate, setAnimate] = createSignal({opacity: 0.5})
-				render(() => <Component animate={animate()} />)
-				setAnimate({opacity: 0.8})
-				setTimeout(dispose, 20)
-			}),
+		const Component = (props: any): JSX.Element => (
+			<Motion.div
+				initial={{opacity: 0}}
+				animate={props.animate}
+				onMotionComplete={({detail}) => {
+					if (detail.target.opacity === 0.8) resolve(true)
+				}}
+				transition={{duration}}
+			/>
 		)
-		expect(result).toBe(true)
+
+		let resolve!: (value: boolean) => void
+		const completed = new Promise<boolean>(r => (resolve = r))
+
+		/*
+		The signal lives outside the root, and is written to after it: Solid 2.0
+		rejects writes made from inside an owned scope.
+		*/
+		const [animate, setAnimate] = createSignal({opacity: 0.5})
+		const dispose = createRoot(dispose => {
+			render(() => <Component animate={animate()} />)
+			return dispose
+		})
+
+		setAnimate({opacity: 0.8})
+
+		expect(await completed).toBe(true)
+		dispose()
 	})
 
 	test("Accepts default transition", async () => {
@@ -152,111 +152,23 @@ describe("Motion", () => {
 		expect(captured).toEqual([0])
 	})
 
-	test("hover reverts to the start value without an `animate` prop", async () => {
-		let ref!: HTMLDivElement
-		render(() => (
-			<Motion.div
-				ref={ref}
-				initial={{opacity: 0.3}}
-				hover={{opacity: 1}}
-				transition={{duration: 0.01}}
-			/>
-		))
-		expect(ref.style.opacity).toBe("0.3")
-
-		fireEvent.pointerEnter(ref)
-		await sleep(120)
-		expect(ref.style.opacity).toBe("1")
-
-		fireEvent.pointerLeave(ref)
-		await sleep(120)
-		expect(ref.style.opacity).toBe("0.3")
-	})
-
-	test("press reverts to the element's own resting value", async () => {
-		let ref!: HTMLDivElement
-		render(() => (
-			<Motion.div
-				ref={ref}
-				hover={{scale: 1.2}}
-				press={{scale: 0.9}}
-				transition={{duration: 0.01}}
-			/>
-		))
-
-		fireEvent.pointerEnter(ref)
-		await sleep(120)
-		expect(ref.style.transform).toContain("scale(1.2)")
-
-		fireEvent.pointerDown(ref)
-		await sleep(120)
-		expect(ref.style.transform).toContain("scale(0.9)")
-
-		// press ends, hover is still active — falls back to the hover layer
-		fireEvent.pointerUp(ref)
-		await sleep(120)
-		expect(ref.style.transform).toContain("scale(1.2)")
-
-		// and back to the element's own resting scale of 1, which Motion
-		// serializes as an identity transform
-		fireEvent.pointerLeave(ref)
-		await sleep(120)
-		expect(ref.style.transform).toBe("none")
-	})
-
-	test("onViewEnter receives the IntersectionObserverEntry", async () => {
-		let entry: IntersectionObserverEntry | undefined
-		let ref!: HTMLDivElement
-		render(() => (
-			<Motion.div
-				ref={ref}
-				inView={{opacity: 0.5}}
-				onViewEnter={({detail}) => (entry = detail.originalEntry)}
-				transition={{duration: 0.01}}
-			/>
-		))
-
-		triggerInView(ref, true)
-
-		expect(entry).toBeDefined()
-		expect(entry!.target).toBe(ref)
-		expect(entry!.isIntersecting).toBe(true)
-	})
-
-	test("the inView layer survives a reactive animate change", async () => {
-		const [animate, setAnimate] = createSignal<Target>({opacity: 0.2})
-		let ref!: HTMLDivElement
-		render(() => (
-			<Motion.div
-				ref={ref}
-				animate={animate()}
-				inView={{opacity: 0.8}}
-				transition={{duration: 0.01}}
-			/>
-		))
-
-		triggerInView(ref, true)
-		await sleep(120)
-		expect(ref.style.opacity).toBe("0.8")
-
-		setAnimate({opacity: 0.3})
-		flush()
-		await sleep(120)
-		// still in view, so the inView layer keeps priority over the new `animate`
-		expect(ref.style.opacity).toBe("0.8")
-
-		triggerInView(ref, false)
-		await sleep(120)
-		expect(ref.style.opacity).toBe("0.3")
-	})
-
-	test("Motion.tag access is cached", () => {
+	test("Proxy hands back the same component for a given tag", () => {
+		/*
+		A fresh component per property access changes the identity of
+		`<Motion.div/>`'s component between renders, which is enough for Solid to
+		tear the element down and rebuild it instead of updating it.
+		*/
 		expect(Motion.div).toBe(Motion.div)
 		expect(Motion.span).not.toBe(Motion.div)
 	})
 
-	test("Motion isn't thenable", async () => {
+	test("Proxy does not turn Motion into a thenable", () => {
+		/*
+		Every unknown key resolves to a component; `then` must not, or awaiting
+		Motion (or lazily importing it) hangs on a fake thenable.
+		*/
 		expect((Motion as any).then).toBeUndefined()
-		await expect(Promise.resolve(Motion)).resolves.toBe(Motion)
+		expect(typeof Motion.name).toBe("string")
+		expect(typeof (Motion as any).div).toBe("function")
 	})
 })

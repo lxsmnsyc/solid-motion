@@ -1,6 +1,6 @@
 import {Dynamic} from "@solidjs/web"
 import type {JSX} from "@solidjs/web"
-import {omit, createContext} from "solid-js"
+import {merge, omit, createContext} from "solid-js"
 import {combineStyle} from "@solid-primitives/props"
 import {MotionState} from "./engine.js"
 
@@ -33,8 +33,9 @@ export const MotionComponent = (
 	},
 ): JSX.Element => {
 	const attrs = omit(props, ...OPTION_KEYS, ...ATTR_KEYS)
+	const tag = props.tag || "div"
 
-	const [state, style] = createAndBindMotionState(
+	const [state, startStyles] = createAndBindMotionState(
 		() => root,
 		() => ({
 			initial: props.initial,
@@ -49,25 +50,37 @@ export const MotionComponent = (
 		}),
 		tryUseContext(PresenceContext),
 		tryUseContext(ParentContext),
+		tag,
 	)
+
+	/*
+	Folded into one object rather than spread separately: an extra prop source
+	shifts Solid's hydration key numbering and adds a stray separator to the
+	rendered markup, so an element with no SVG geometry keeps exactly the props
+	it had before. The start target goes last so its geometry wins over a
+	same-named prop, matching how the computed style layers over `props.style`.
+	*/
+	const renderedAttrs = Object.keys(startStyles.attrs).length
+		? merge(attrs, startStyles.attrs)
+		: attrs
 
 	let root!: Element
 	return (
 		<ParentContext value={state}>
 			<Dynamic
-				{...attrs}
+				{...renderedAttrs}
 				ref={(el: Element) => {
 					root = el
 					props.ref?.(el)
 				}}
-				component={props.tag || "div"}
-				style={combineStyle(props.style, style)}
+				component={tag}
+				style={combineStyle(props.style, startStyles.style)}
 			/>
 		</ParentContext>
 	)
 }
 
-/** one stable component per tag, so `Motion.div === Motion.div` */
+/** one memoised component per tag — see the `get` trap below */
 const tagComponents = new Map<string, MotionProxyComponent<any>>()
 
 /**
@@ -78,7 +91,7 @@ const tagComponents = new Map<string, MotionProxyComponent<any>>()
  * - `animate` a target of values to animate to. Accepts all the same values and keyframes as Motion One's [animate function](https://motion.dev/dom/animate). This prop is **reactive** – changing it will animate the transition element to the new state.
  * - `transition` for changing type of animation
  * - `initial` a target of values to animate from when the element is first rendered.
- * - `exit` a target of values to animate to when the element is removed. Requires a `<Presence>` ancestor — the element can sit anywhere inside the subtree `Presence` transitions, not just at its root.
+ * - `exit` a target of values to animate to when the element is removed. The element must be a direct child of the `<Presence>` component.
  *
  * @example
  * ```tsx
@@ -97,18 +110,23 @@ const tagComponents = new Map<string, MotionProxyComponent<any>>()
  * ```
  */
 export const Motion = new Proxy(MotionComponent, {
+	/*
+	Only keys the component function doesn't already answer to are treated as tag
+	names. Without that fallback every access returns a component — including
+	`Motion.then`, which makes `Motion` look like a thenable and hangs anything
+	that awaits it or resolves it as a lazily-imported component. `then` is
+	excluded explicitly because it isn't a property of `Function.prototype`.
+	*/
 	get(target, key, receiver) {
-		/*
-		Only string keys that aren't already properties of MotionComponent name a
-		tag. Trapping *every* key made `Motion.then` a function, which is enough
-		for any promise-resolution path to treat `Motion` itself as a thenable
-		and call it; `MotionComponent`'s own function properties (`name`,
-		`length`, `call`, `prototype`, ...) don't collide with any HTML tag name,
-		so forwarding them is safe.
-		*/
-		if (typeof key !== "string" || key === "then" || key in target)
+		if (typeof key !== "string" || key === "then" || Reflect.has(target, key))
 			return Reflect.get(target, key, receiver)
 
+		/*
+		Memoised so `Motion.div === Motion.div`. Handing back a fresh component
+		on every property access makes the identity of `<Motion.div/>`'s
+		component change between renders, which is enough for Solid to treat it
+		as a different component and tear the element down instead of updating it.
+		*/
 		let component = tagComponents.get(key)
 		if (!component) {
 			component = props => <MotionComponent {...props} tag={key} />
