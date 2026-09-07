@@ -87,7 +87,7 @@ Every animation-related prop below accepts either a direct target object (`{opac
 | --------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `initial`       | target \| string \| `false` | The style to render _before_ any animation runs. Defaults to the element's current computed style. Set to `false` to skip the enter animation entirely — see [Enter animations](#enter-animations). |
 | `animate`       | target \| string            | The style to animate to. Reactive — changing it (e.g. via a signal) re-triggers an animation to the new target.                                                                                     |
-| `exit`          | target \| string            | The style to animate to when the element is removed. Only takes effect inside a [`Presence`](#exit-animations) ancestor; without one, the element unmounts immediately regardless of this prop.     |
+| `exit`          | target \| string            | The style to animate to when the element is removed. Only takes effect anywhere inside a [`Presence`](#exit-animations) ancestor's subtree; without one, the element unmounts immediately.          |
 | `hover`         | target \| string            | The style to animate to while the pointer is hovering the element. See [Gestures](#gestures-hover-and-press).                                                                                       |
 | `press`         | target \| string            | The style to animate to while the element is being pressed. Layers on top of `hover` if both are active.                                                                                            |
 | `inView`        | target \| string            | The style to animate to when the element scrolls into view. See [Scroll-triggered animations](#scroll-triggered-animations).                                                                        |
@@ -152,7 +152,40 @@ function App() {
 </Presence>
 ```
 
-If more than one `Motion` element (nested or as siblings) has its own `exit` prop, `Presence` waits for every one of them to finish its own exit animation before removing the subtree.
+Every `Motion` in the exiting subtree takes part, not just the top one: when descendants have their own `exit` props — with their own durations — `Presence` waits for all of them to finish before removing anything. The element being transitioned doesn't have to be a `Motion` itself either, so a plain wrapper around animated children works:
+
+```tsx
+<Presence>
+  <Show when={isShown()}>
+    <div class="card">
+      <Motion.h2 exit={{opacity: 0, transition: {duration: 0.15}}}>
+        Title
+      </Motion.h2>
+      <Motion.p exit={{opacity: 0, transition: {duration: 0.6}}}>Body</Motion.p>
+    </div>
+  </Show>
+</Presence>
+```
+
+`Presence` transitions **one element at a time**: it resolves the first element among its children and ignores the rest, so siblings passed to it directly won't work. Wrap them in a common parent instead.
+
+```tsx
+// ✗ only the first is ever rendered
+<Presence>
+  <Motion.div exit={{opacity: 0}} />
+  <Motion.div exit={{opacity: 0}} />
+</Presence>
+
+// ✓ one transitioning element, both animate out
+<Presence>
+  <Show when={isShown()}>
+    <div>
+      <Motion.div exit={{opacity: 0}} />
+      <Motion.div exit={{opacity: 0}} />
+    </div>
+  </Show>
+</Presence>
+```
 
 ## `Presence` props
 
@@ -267,14 +300,15 @@ Note that only `initial` is inherited this way — `animate`/`exit`/`hover`/`pre
 
 ```tsx
 <Motion.div
-  animate={{scale: 1}}
   hover={{scale: 1.1}}
   press={{scale: 0.95}}
   transition={{duration: 0.15}}
 />
 ```
 
-If both are active at once (pressing while already hovering), `press` takes priority over `hover` for any overlapping properties.
+Overlapping properties are layered `animate` → `inView` → `hover` → `press`, so pressing while already hovering applies `press`, and releasing falls back to `hover`.
+
+Neither prop needs an `animate` alongside it. When a gesture ends, every property it introduced animates back to a resting value — taken from `animate` or `initial` if either defines it, and otherwise read off the element itself.
 
 ## Scroll-triggered animations
 
@@ -307,6 +341,8 @@ Every `Motion` component also accepts these optional event handler props:
 | `onHoverStart` / `onHoverEnd` | Pointer enters / leaves the element                                         | `{originalEvent}` — the underlying `PointerEvent`              |
 | `onPressStart` / `onPressEnd` | Pointer is pressed / released on the element                                | `{originalEvent}`                                              |
 | `onViewEnter` / `onViewLeave` | Element enters / leaves the viewport (per `inView`/`inViewOptions`)         | `{originalEntry}` — the underlying `IntersectionObserverEntry` |
+
+`onMotionStart`/`onMotionComplete` only fire when an animation actually runs. A target that resolves to no animatable values — a `variants` key with no match, or a target carrying nothing but a `transition` — is a no-op and reports neither event.
 
 ```tsx
 <Motion.div

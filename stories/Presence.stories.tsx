@@ -142,13 +142,14 @@ export const ExitBeforeEnter: Story = {
 }
 
 /**
- * Multiple nested descendants each have their own `exit` — every one must
- * finish its own exit animation before the whole subtree is removed.
+ * Nested descendants each have their own `exit`, with *different* durations —
+ * every one must finish before the whole subtree is removed. The parent here
+ * exits four times faster than its child, so a `Presence` that only waited on
+ * the transitioning element itself would rip the child out mid-animation.
  */
 export const NestedExit: Story = {
 	render: () => {
 		const [show, setShow] = createSignal(true)
-		const exit = {opacity: 0, transition: {duration: 0.5}}
 		return (
 			<div>
 				<button data-testid="toggle" onClick={() => setShow(s => !s)}>
@@ -159,12 +160,12 @@ export const NestedExit: Story = {
 						<Motion.div
 							data-testid="parent"
 							style={{...box, background: "royalblue"}}
-							exit={exit}
+							exit={{opacity: 0, transition: {duration: 0.15}}}
 						>
 							<Motion.div
 								data-testid="child"
 								style={{width: "40px", height: "40px", background: "crimson"}}
-								exit={exit}
+								exit={{opacity: 0, transition: {duration: 0.6}}}
 							/>
 						</Motion.div>
 					</Show>
@@ -173,14 +174,21 @@ export const NestedExit: Story = {
 		)
 	},
 	// round-trips back to the visible state so the story doesn't land on an
-	// empty canvas after the automated demonstration finishes — a 0.001s
-	// duration (fast enough for jsdom-based unit tests) also finishes far too
-	// quickly to actually see, so this uses a human-visible 0.5s instead.
-	play: async ({canvasElement}) => {
+	// empty canvas after the automated demonstration finishes — the durations
+	// are also kept human-visible rather than the 0.001s the jsdom-based unit
+	// tests use, which finishes far too quickly to actually see.
+	play: async ({canvasElement, step}) => {
 		const canvas = within(canvasElement)
 		await waitFor(() => expect(canvas.getByTestId("parent")).toBeInTheDocument())
 
 		await userEvent.click(canvas.getByTestId("toggle"))
+
+		await step("parent outlives its own 0.15s exit, waiting on the child", async () => {
+			await new Promise(resolve => setTimeout(resolve, 300))
+			expect(canvas.getByTestId("parent")).toBeInTheDocument()
+			expect(canvas.getByTestId("child")).toBeInTheDocument()
+		})
+
 		await waitFor(() => expect(canvas.queryByTestId("parent")).not.toBeInTheDocument(), {
 			timeout: 2000,
 		})

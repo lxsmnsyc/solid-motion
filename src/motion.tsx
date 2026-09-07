@@ -5,8 +5,8 @@ import {combineStyle} from "@solid-primitives/props"
 import {MotionState} from "./engine.js"
 
 import type {MotionComponentProps, MotionProxy, MotionProxyComponent} from "./types.js"
-import {createAndBindMotionState, tryUseContext} from "./primitives.js"
-import {PresenceContext} from "./presence.jsx"
+import {createAndBindMotionState} from "./primitives.js"
+import {PresenceContext, tryUseContext} from "./presence.jsx"
 
 const OPTION_KEYS = [
 	"initial",
@@ -67,6 +67,9 @@ export const MotionComponent = (
 	)
 }
 
+/** one stable component per tag, so `Motion.div === Motion.div` */
+const tagComponents = new Map<string, MotionProxyComponent<any>>()
+
 /**
  * Renders an animatable HTML or SVG element.
  *
@@ -75,7 +78,7 @@ export const MotionComponent = (
  * - `animate` a target of values to animate to. Accepts all the same values and keyframes as Motion One's [animate function](https://motion.dev/dom/animate). This prop is **reactive** – changing it will animate the transition element to the new state.
  * - `transition` for changing type of animation
  * - `initial` a target of values to animate from when the element is first rendered.
- * - `exit` a target of values to animate to when the element is removed. The element must be a direct child of the `<Presence>` component.
+ * - `exit` a target of values to animate to when the element is removed. Requires a `<Presence>` ancestor — the element can sit anywhere inside the subtree `Presence` transitions, not just at its root.
  *
  * @example
  * ```tsx
@@ -94,7 +97,23 @@ export const MotionComponent = (
  * ```
  */
 export const Motion = new Proxy(MotionComponent, {
-	get:
-		(_, tag: string): MotionProxyComponent<any> =>
-		props => <MotionComponent {...props} tag={tag} />,
+	get(target, key, receiver) {
+		/*
+		Only string keys that aren't already properties of MotionComponent name a
+		tag. Trapping *every* key made `Motion.then` a function, which is enough
+		for any promise-resolution path to treat `Motion` itself as a thenable
+		and call it; `MotionComponent`'s own function properties (`name`,
+		`length`, `call`, `prototype`, ...) don't collide with any HTML tag name,
+		so forwarding them is safe.
+		*/
+		if (typeof key !== "string" || key === "then" || key in target)
+			return Reflect.get(target, key, receiver)
+
+		let component = tagComponents.get(key)
+		if (!component) {
+			component = props => <MotionComponent {...props} tag={key} />
+			tagComponents.set(key, component)
+		}
+		return component
+	},
 }) as MotionProxy

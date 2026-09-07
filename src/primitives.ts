@@ -2,26 +2,10 @@ import {scrollInfo} from "framer-motion/dom"
 import {isServer} from "@solidjs/web"
 
 import {createMotionState, createStyles, MotionState, style} from "./engine.js"
-import {Accessor, Context, createEffect, createSignal, flush, onCleanup, useContext} from "solid-js"
+import {Accessor, createEffect, createSignal, flush, onCleanup} from "solid-js"
 
-import {PresenceContext, PresenceContextState} from "./presence.jsx"
+import {PresenceContext, PresenceContextState, tryUseContext} from "./presence.jsx"
 import {Options} from "./types.js"
-
-/*
-Solid 2.0's useContext throws ContextNotFoundError whenever the resolved value
-is undefined, even with an explicit `undefined` default — there's no built-in
-way to ask "is there a provider" without throwing. ParentContext/PresenceContext
-are legitimately optional (most Motion components have neither an ancestor
-Presence nor a parent Motion), so reads of them go through this instead.
-*/
-/** @internal */
-export function tryUseContext<T>(context: Context<T>): T | undefined {
-	try {
-		return useContext(context)
-	} catch {
-		return undefined
-	}
-}
 
 /** @internal */
 export function createAndBindMotionState(
@@ -66,9 +50,21 @@ export function createAndBindMotionState(
 
 			return () => {
 				if (presence_state && options().exit) {
-					state.setActive("exit", true)
-					el_ref.addEventListener("motioncomplete", unmount)
-				} else unmount()
+					const exiting = state.startExit()
+					if (exiting) {
+						/*
+						Hand the running exit to the enclosing Presence before
+						returning: this cleanup runs during Solid's disposal pass,
+						which completes before the render effect that invokes
+						Presence's own `onExit` — so by the time it looks for
+						pending exits in this subtree, ours is already there.
+						*/
+						presence_state.exits?.retain(el_ref, exiting)
+						void exiting.then(unmount)
+						return
+					}
+				}
+				unmount()
 			}
 		},
 	)

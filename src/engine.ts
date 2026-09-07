@@ -1,6 +1,13 @@
 import {animate} from "framer-motion/dom"
 import {inView as motionInView} from "framer-motion/dom"
-import {hover, press, buildHTMLStyles} from "motion-dom"
+import {
+	hover,
+	press,
+	buildHTMLStyles,
+	camelToDash,
+	readTransformValue,
+	transformProps,
+} from "motion-dom"
 import type {AnimationOptions} from "motion-dom"
 
 import type {Options, Target, VariantDefinition} from "./types.js"
@@ -12,7 +19,13 @@ export const mountedStates = new WeakMap<Element, MotionState>()
 export interface MotionState {
 	mount(el: Element): () => void
 	update(options: Options): void
-	setActive(type: "exit", isActive: boolean): Promise<void>
+	/**
+	 * @internal Begins the exit animation, returning a promise that settles once
+	 * it has actually finished — or `null` when `exit` resolves to nothing
+	 * animatable, so the caller can unmount synchronously instead of waiting a
+	 * microtask on an already-resolved promise.
+	 */
+	startExit(): Promise<void> | null
 	getTarget(): Target
 	getOptions(): Options
 	/** @internal the resolved `initial` variant key, inherited from a parent Motion if unset here */
@@ -101,12 +114,14 @@ interface MountContext {
 	element: Element
 	cancelAnimation?: () => void
 	unbindGestures?: () => void
+	/** resolves the latch handed out by `startExit()` — see there for why it isn't the animation's own promise */
+	resolveExit?: () => void
 }
 
 /** @internal */
 export function createMotionState(initialOptions: Options, parent?: MotionState): MotionState {
 	let options = initialOptions
-	const active = {hover: false, press: false, exit: false}
+	const active = {hover: false, press: false, inView: false, exit: false}
 
 	/*
 	Scoped to whichever mount() call is currently active. A sibling Motion
@@ -146,15 +161,82 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 		return resolveTarget(options.initial, options.variants) ?? {}
 	}
 
+	/*
+	Resting values for keys that *only* a gesture layer introduces. Without an
+	`animate` prop to fall back to, ending a gesture computes an empty target,
+	`animateToTarget` short-circuits, and the element stays stuck in its
+	hovered/pressed state forever.
+
+	Recorded lazily, keyed once and never re-read: the first computation happens
+	from a gesture's start handler, before that gesture's own animation is
+	started, so whatever is read off the element here is genuinely its rest
+	state. `undefined` is recorded (and skipped when filling) for keys with no
+	readable value, so the element is only measured once either way.
+	*/
+	const restValues: Record<string, unknown> = {}
+
+	function readRestValue(el: Element, key: string): unknown {
+		// transforms aren't readable as plain style properties — they have to be
+		// parsed back out of the computed matrix, which falls back to the
+		// property's own identity value (1 for scales, 0 otherwise) when unset
+		if (transformProps.has(key)) return readTransformValue(el as HTMLElement, key)
+
+		// targets may be written camelCase or kebab-case; getPropertyValue only
+		// understands the latter (and leaves `--custom-props` alone)
+		const value = getComputedStyle(el).getPropertyValue(camelToDash(key))
+		return value === "" ? undefined : value
+	}
+
+	function recordRestValues(el: Element): void {
+		const base = resolveTarget(options.animate, options.variants)
+		let start: Target | undefined
+
+		for (const layer of [options.hover, options.press, options.inView]) {
+			const target = resolveTarget(layer, options.variants)
+			if (!target) continue
+
+			for (const key of Object.keys(target)) {
+				if (key === "transition" || key in restValues) continue
+
+				const animated = base?.[key as keyof Target]
+				if (animated !== undefined) {
+					// where the base layer's own animation lands
+					restValues[key] = Array.isArray(animated) ? animated.at(-1) : animated
+					continue
+				}
+
+				start ??= getStartTarget()
+				const initial = start[key as keyof Target]
+				if (initial !== undefined) {
+					// what `initial` statically applied — see createStyles()
+					restValues[key] = Array.isArray(initial) ? initial[0] : initial
+					continue
+				}
+
+				restValues[key] = readRestValue(el, key)
+			}
+		}
+	}
+
+	// layered lowest-priority first: animate -> inView -> hover -> press
 	function computeEffectiveTarget(): Target {
 		if (active.exit) return resolveTarget(options.exit, options.variants) ?? {}
+
+		if (current) recordRestValues(current.element)
+
 		const target: Target = {...(resolveTarget(options.animate, options.variants) ?? {})}
+		if (active.inView) Object.assign(target, resolveTarget(options.inView, options.variants))
 		if (active.hover) Object.assign(target, resolveTarget(options.hover, options.variants))
 		if (active.press) Object.assign(target, resolveTarget(options.press, options.variants))
+
+		for (const key in restValues) {
+			if (restValues[key] !== undefined && !(key in target))
+				(target as Record<string, unknown>)[key] = restValues[key]
+		}
 		return target
 	}
 
-	function animateToTarget(target: Target): Promise<void> {
+	function animateToTarget(target: Target, isExit = false): Promise<void> {
 		const ctx = current
 		ctx?.cancelAnimation?.()
 		if (!ctx) return Promise.resolve()
@@ -168,12 +250,27 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 		dispatch(ctx.element, "motionstart", {target})
 		const controls = animate(ctx.element, values as any, transition as any)
 		ctx.cancelAnimation = () => controls.stop()
+		/*
+		Only a *completed* animation reaches the fulfilment arm: Motion leaves
+		`finished` permanently pending on a stopped or cancelled animation
+		(it neither resolves nor rejects), which is exactly why the exit latch
+		below can't just be `controls.finished` itself. The rejection arm is
+		kept as a guard against a future version choosing to reject instead.
+		*/
 		return controls.finished.then(
 			() => {
 				// don't dispatch on behalf of a mount cycle a newer one has superseded
-				if (current === ctx) dispatch(ctx.element, "motioncomplete", {target})
+				if (current !== ctx) return
+				dispatch(ctx.element, "motioncomplete", {target})
+				// only the exit animation itself releases the latch, so a gesture
+				// or `animate` change that happens to land while `active.exit` is
+				// already set can't cut the exit short
+				if (isExit) {
+					const resolve = ctx.resolveExit
+					ctx.resolveExit = undefined
+					resolve?.()
+				}
 			},
-			// swallow: `finished` rejects when an in-flight animation is cancelled/replaced
 			() => undefined,
 		)
 	}
@@ -212,13 +309,14 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 			unbinds.push(
 				motionInView(
 					el,
-					(entry: any) => {
+					// `inView`'s start callback is `(element, entry)`, unlike
+					// hover/press whose second argument is the originating event
+					(_el, entry) => {
+						active.inView = true
 						dispatch(el, "viewenter", {originalEntry: entry})
-						void animateToTarget({
-							...(resolveTarget(options.animate, options.variants) ?? {}),
-							...resolveTarget(options.inView, options.variants),
-						})
+						void animateToTarget(computeEffectiveTarget())
 						return leaveEntry => {
+							active.inView = false
 							dispatch(el, "viewleave", {originalEntry: leaveEntry})
 							void animateToTarget(computeEffectiveTarget())
 						}
@@ -232,8 +330,25 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 
 	const state: MotionState = {
 		mount(el: Element) {
+			/*
+			`active` is scoped to the state, which outlives any single mount, so
+			a fresh mount must not inherit the previous cycle's flags — a stale
+			`hover: true` would otherwise keep layering the hover target onto
+			every subsequent target computation.
+			*/
+			const stranded = current?.resolveExit
+			active.hover = active.press = active.inView = active.exit = false
+
 			const ctx: MountContext = {element: el}
 			current = ctx
+
+			/*
+			Whatever exit the superseded cycle was running can never complete now
+			(`animateToTarget` only settles the latch while its own context is
+			still `current`), so release its waiter rather than pinning the old
+			element in the DOM forever.
+			*/
+			stranded?.()
 
 			const startTarget = getStartTarget()
 			applyStylesDirect(el, startTarget)
@@ -272,7 +387,10 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 				prevOptions.press !== options.press ||
 				prevOptions.inView !== options.inView ||
 				prevOptions.inViewOptions !== options.inViewOptions
-			if (gesturesChanged && current) {
+			// ...and never once the element is exiting: `startExit()` deliberately
+			// unbound them, and re-arming here would let a gesture landing mid-exit
+			// cut the exit animation short
+			if (gesturesChanged && current && !active.exit) {
 				current.unbindGestures?.()
 				current.unbindGestures = bindGestures(current.element)
 			}
@@ -282,9 +400,32 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 				void animateToTarget(computeEffectiveTarget())
 			}
 		},
-		setActive(type: "exit", isActive: boolean) {
-			active[type] = isActive
-			return animateToTarget(computeEffectiveTarget())
+		startExit() {
+			active.exit = true
+
+			const ctx = current
+			/*
+			Gestures would otherwise stay bound for the whole exit window (the
+			mount disposer only runs once the exit is over), so a `pointerleave`
+			or `pressend` landing mid-exit would cancel and restart the exit
+			animation, stranding the latch on an animation that can no longer
+			complete. Unbind at exit start, and clear the handle so the disposer
+			can't unbind a second time.
+			*/
+			ctx?.unbindGestures?.()
+			if (ctx) ctx.unbindGestures = undefined
+
+			const target = computeEffectiveTarget()
+			// nothing animatable (e.g. `exit="typo"`, or an exit target carrying
+			// only a `transition`): say so synchronously so the caller unmounts
+			// now instead of waiting on a promise that would never settle
+			if (!ctx || Object.keys(targetValues(target)).length === 0) return null
+
+			let resolve!: () => void
+			const latch = new Promise<void>(r => (resolve = r))
+			ctx.resolveExit = resolve
+			void animateToTarget(target, true)
+			return latch
 		},
 		getTarget: getStartTarget,
 		getOptions: () => options,
