@@ -219,13 +219,24 @@ the property's zero value — and a transform is the case that gets this wrong
 most easily, since it can only be read back out of a computed matrix.
 */
 const HoverOverInitial = (): JSX.Element => (
-	<Motion.div
-		data-testid="box"
-		style={box}
-		initial={{scale: 2, opacity: 0.3}}
-		hover={{scale: 3, opacity: 0.9}}
-		transition={{duration: 0.1}}
-	/>
+	/*
+	Padded clear of the page corner, and not cosmetically: this is the only
+	demo scaled up at rest, so its 80x80 box renders 160x160 about its centre.
+	At the page's own 24px padding that reaches back over (0,0) — where
+	Playwright parks the pointer after a navigation — so the browser dispatches
+	`pointerover` on load and the hover animation runs before the test has
+	asserted anything. 48px puts the centre 72px from the origin, clear of the
+	80px half-width the `scale: 2` box spans.
+	*/
+	<div style={{padding: "48px"}}>
+		<Motion.div
+			data-testid="box"
+			style={box}
+			initial={{scale: 2, opacity: 0.3}}
+			hover={{scale: 3, opacity: 0.9}}
+			transition={{duration: 0.1}}
+		/>
+	</div>
 )
 
 /*

@@ -79,6 +79,15 @@ test.describe("gestures", () => {
 		await openDemo(page, "hover-over-initial")
 
 		const box = page.getByTestId("box")
+		/*
+		The pointer starts at (0,0) after a navigation, and `scale` makes this
+		box far larger than its layout box — so park the pointer clear of it
+		before reading the resting value. The move alone is not enough: if a
+		hover did land, leaving it starts a 0.1s animation back to 2, so the
+		settle is what absorbs it.
+		*/
+		await page.mouse.move(600, 600)
+		await settled(box, "transform")
 		expect(await scaleOf(box)).toBeCloseTo(2, 1)
 
 		await box.hover()
