@@ -56,9 +56,18 @@ const DEFAULT_TRANSITION: AnimationOptions = {
 transform Motion builds, so a layout offset composes with a user's own `x`
 instead of fighting it for the same slot.
 */
-function measure(registration: Registration): {left: number; top: number} {
+function measure(registration: Registration): {left: number; top: number} | undefined {
 	const {host} = registration
 	const box = host.element.getBoundingClientRect()
+
+	/*
+	A `display: none` element measures as a zero box everywhere. That is the
+	absence of a layout rather than a change of one, so it is skipped and the
+	last real position kept: treating it as a move would animate a full offset
+	on something invisible, then animate it back very visibly on the way in.
+	*/
+	if (box.width === 0 && box.height === 0) return undefined
+
 	// subtract the offset we are applying, to recover the true layout position
 	return {
 		left: box.left - host.offset("translateX"),
@@ -78,6 +87,8 @@ function check(): void {
 
 	for (const registration of registry) {
 		const next = measure(registration)
+		if (!next) continue
+
 		const previous = registration.previous
 		registration.previous = next
 		if (!previous) continue

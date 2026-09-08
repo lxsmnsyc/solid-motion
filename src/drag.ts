@@ -52,7 +52,7 @@ export interface DragHost {
 	value(axis: "x" | "y"): MotionValue<number>
 	options(): Options
 	/** turns the `dragging` layer on and off */
-	setDragging(active: boolean, event: PointerEvent): void
+	setDragging(active: boolean): void
 	dispatch(type: string, detail: Record<string, unknown>): void
 }
 
@@ -140,7 +140,7 @@ export function bindDrag(host: DragHost): () => void {
 			onto every element anyone merely clicked.
 			*/
 			session.start = {x: host.value("x").get(), y: host.value("y").get()}
-			host.setDragging(true, event)
+			host.setDragging(true)
 			host.dispatch("dragstart", {originalEvent: event, offset})
 		}
 
@@ -194,7 +194,7 @@ export function bindDrag(host: DragHost): () => void {
 			)
 		}
 
-		host.setDragging(false, event)
+		host.setDragging(false)
 		host.dispatch("dragend", {originalEvent: event, offset})
 	}
 

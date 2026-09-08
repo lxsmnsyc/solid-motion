@@ -1,5 +1,5 @@
 import {renderToString} from "@solidjs/web"
-import {Motion, Presence} from "../src/index.jsx"
+import {Motion, Presence, createMotionValue} from "../src/index.jsx"
 
 describe("ssr", () => {
 	test("Renders", () => {
@@ -82,11 +82,47 @@ describe("ssr", () => {
 		expect(div).toBe(`<div _hk=2010 style=\"transform:translateX(100px)\"></div>`)
 	})
 
+	/*
+	Every animation prop, not a sample of them: a prop added later that isn't
+	stripped would otherwise reach the server-rendered markup as a junk
+	attribute, and only a test naming all of them catches that.
+	*/
 	test("Filters out all props", () => {
 		const div = renderToString(() => (
-			<Motion.div hover={{opacity: 1}} press={{opacity: 1}} variants={{}} />
+			<Motion.div
+				initial={{opacity: 1}}
+				animate={{opacity: 1}}
+				exit={{opacity: 1}}
+				hover={{opacity: 1}}
+				press={{opacity: 1}}
+				focus={{opacity: 1}}
+				inView={{opacity: 1}}
+				inViewOptions={{amount: 0.5}}
+				drag
+				dragging={{opacity: 1}}
+				dragConstraints={{left: 0}}
+				dragElastic={0.2}
+				dragMomentum={false}
+				dragTransition={{}}
+				layout
+				layoutTransition={{duration: 1}}
+				reducedMotion="user"
+				variants={{}}
+				transition={{duration: 1}}
+				values={{}}
+			/>
 		))
-		expect(div).toBe('<div _hk=2010 style=""></div>')
+		// `initial` is the only one with a rendered consequence
+		expect(div).toBe('<div _hk=2010 style="opacity:1"></div>')
+	})
+
+	test("Leaves a MotionValue out of the server-rendered style", () => {
+		const x = createMotionValue(40)
+		const div = renderToString(() => <Motion.div style={{x, color: "red"}} />)
+
+		// the value is bound to the element on the client; there is nothing to
+		// serialise for it here, and stringifying one would emit junk
+		expect(div).toBe('<div _hk=2010 style="color:red"></div>')
 	})
 
 	test("Renders Presence", () => {

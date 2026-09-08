@@ -111,6 +111,45 @@ describe("layout", () => {
 		expect(box.style.transform).toBe("")
 	})
 
+	/*
+	A hidden element measures as a zero box, which is not a layout change — it
+	is the absence of a layout. Treating it as one applies a full-offset
+	animation to something invisible, and then a second, very visible one when
+	it comes back.
+	*/
+	test("Ignores an element while it is not rendered", async () => {
+		render(() => <Motion.div data-testid="box" layout layoutTransition={{duration: 4}} />)
+		const box = await screen.findByTestId("box")
+
+		stubBox(box, {left: 100, top: 200})
+		await frames()
+
+		// display: none — every measurement collapses to zero
+		Object.defineProperty(box, "getBoundingClientRect", {
+			configurable: true,
+			value: () => ({
+				left: 0,
+				top: 0,
+				right: 0,
+				bottom: 0,
+				width: 0,
+				height: 0,
+				x: 0,
+				y: 0,
+				toJSON: () => ({}),
+			}),
+		})
+		touchDom()
+		await frames()
+		expect(box.style.transform).toBe("")
+
+		// and shown again in the same place: still no layout change
+		stubBox(box, {left: 100, top: 200})
+		touchDom()
+		await frames()
+		expect(box.style.transform).toBe("")
+	})
+
 	test("Stops tracking once the element is gone", async () => {
 		const [show, setShow] = createSignal(true)
 		render(() => (

@@ -11,6 +11,11 @@ The demo list is scraped from the playground's own index page rather than
 hard-coded, so a demo added later is covered without touching this file.
 */
 test("no reactivity diagnostics in any demo", async ({page}) => {
+	// one test that walks every demo and drives each one, so it needs more than
+	// a single test's budget — though not by much once it stays out of the
+	// demos it has no business dragging
+	test.setTimeout(60_000)
+
 	let current = "index"
 	const diagnostics: string[] = []
 
@@ -35,11 +40,40 @@ test("no reactivity diagnostics in any demo", async ({page}) => {
 		await expect(page.getByTestId("unknown-demo")).toHaveCount(0)
 
 		// drive whatever controls the demo exposes, so teardown paths run too
-		for (const id of ["toggle", "swap", "fade"]) {
+		for (const id of [
+			"toggle",
+			"swap",
+			"fade",
+			"remove",
+			"reorder",
+			"move",
+			"read",
+			"retarget",
+		]) {
 			const control = page.getByTestId(id)
 			if (await control.count()) {
 				await control.click()
-				await page.waitForTimeout(300)
+				await page.waitForTimeout(150)
+			}
+		}
+
+		/*
+		Drag has no button to click, and its whole lifecycle — binding, the
+		pointer session, the layer switching on and off — is where a reactive
+		mistake would hide. Only the drag demos are driven this way: doing it
+		everywhere turns a quick sweep into a multi-minute one for no extra
+		coverage.
+		*/
+		if (demo.startsWith("drag")) {
+			const rect = await page.getByTestId("box").boundingBox()
+			if (rect) {
+				await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2)
+				await page.mouse.down()
+				await page.mouse.move(rect.x + rect.width / 2 + 40, rect.y + rect.height / 2 + 20, {
+					steps: 4,
+				})
+				await page.mouse.up()
+				await page.waitForTimeout(150)
 			}
 		}
 	}

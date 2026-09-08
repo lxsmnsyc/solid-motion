@@ -89,19 +89,24 @@ All non-animation props (`id`, `class`, `onClick`, SVG attributes like `viewBox`
 
 Every animation-related prop below accepts either a direct target object (`{opacity: 1}`) or a string key that's looked up in the [`variants`](#variants) prop.
 
-| Prop            | Type                        | Description                                                                                                                                                                                         |
-| --------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `initial`       | target \| string \| `false` | The style to render _before_ any animation runs. Defaults to the element's current computed style. Set to `false` to skip the enter animation entirely — see [Enter animations](#enter-animations). |
-| `animate`       | target \| string            | The style to animate to. Reactive — changing it (e.g. via a signal) re-triggers an animation to the new target.                                                                                     |
-| `exit`          | target \| string            | The style to animate to when the element is removed. Only takes effect anywhere inside a [`Presence`](#exit-animations) ancestor's subtree; without one, the element unmounts immediately.          |
-| `hover`         | target \| string            | The style to animate to while the pointer is hovering the element. See [Gestures](#gestures-hover-and-press).                                                                                       |
-| `press`         | target \| string            | The style to animate to while the element is being pressed. Layers on top of `hover` if both are active.                                                                                            |
-| `focus`         | target \| string            | The style to animate to while the element has visible (keyboard) focus. See [Gestures](#gestures-hover-press-and-focus).                                                                            |
-| `inView`        | target \| string            | The style to animate to when the element scrolls into view. See [Scroll-triggered animations](#scroll-triggered-animations).                                                                        |
-| `inViewOptions` | `{root?, margin?, amount?}` | Options controlling when `inView` triggers — see [Scroll-triggered animations](#scroll-triggered-animations).                                                                                       |
-| `variants`      | `Record<string, target>`    | A map of named targets that `initial`/`animate`/`exit`/`hover`/`press`/`inView` can reference by string key. See [Variants](#variants).                                                             |
-| `transition`    | object                      | Controls duration, easing, delay, and per-value overrides for the animation. See [Transition options](#transition-options).                                                                         |
-| `tag`           | string                      | Explicitly sets the rendered element tag, as an alternative to `Motion.tag` proxy access.                                                                                                           |
+| Prop            | Type                            | Description                                                                                                                                                                                         |
+| --------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `initial`       | target \| string \| `false`     | The style to render _before_ any animation runs. Defaults to the element's current computed style. Set to `false` to skip the enter animation entirely — see [Enter animations](#enter-animations). |
+| `animate`       | target \| string                | The style to animate to. Reactive — changing it (e.g. via a signal) re-triggers an animation to the new target.                                                                                     |
+| `exit`          | target \| string                | The style to animate to when the element is removed. Only takes effect anywhere inside a [`Presence`](#exit-animations) ancestor's subtree; without one, the element unmounts immediately.          |
+| `hover`         | target \| string                | The style to animate to while the pointer is hovering the element. See [Gestures](#gestures-hover-press-and-focus).                                                                                 |
+| `press`         | target \| string                | The style to animate to while the element is being pressed. Layers on top of `hover` if both are active.                                                                                            |
+| `focus`         | target \| string                | The style to animate to while the element has visible (keyboard) focus. See [Gestures](#gestures-hover-press-and-focus).                                                                            |
+| `inView`        | target \| string                | The style to animate to when the element scrolls into view. See [Scroll-triggered animations](#scroll-triggered-animations).                                                                        |
+| `inViewOptions` | `{root?, margin?, amount?}`     | Options controlling when `inView` triggers — see [Scroll-triggered animations](#scroll-triggered-animations).                                                                                       |
+| `dragging`      | target \| string                | The style to animate to while the element is being dragged. See [Drag](#drag).                                                                                                                      |
+| `variants`      | `Record<string, target>`        | A map of named targets that any of the props above can reference by string key. See [Variants](#variants).                                                                                          |
+| `transition`    | object                          | Controls duration, easing, delay, and per-value overrides for the animation. See [Transition options](#transition-options).                                                                         |
+| `tag`           | string                          | Explicitly sets the rendered element tag, as an alternative to `Motion.tag` proxy access.                                                                                                           |
+| `style`         | CSS \| `MotionValue`s           | Ordinary CSS, plus transform shorthands (`x`, `scale`, …) and [motion values](#motion-values) bound straight to the element.                                                                        |
+| `reducedMotion` | `"never"`\|`"user"`\|`"always"` | Normally set for a subtree with [`MotionConfig`](#motionconfig-and-reduced-motion) instead.                                                                                                         |
+
+Dragging and layout have their own props — [`drag`, `dragConstraints`, `dragElastic`, `dragMomentum`, `dragTransition`](#drag) and [`layout`, `layoutTransition`](#layout-animation) — documented in their own sections.
 
 A target object accepts any CSS property (camelCase or kebab-case), the shorthand transform values (`x`, `y`, `scale`, `rotate`, etc.), CSS custom properties (`"--my-var"`), and can optionally carry its own `transition` override (see [Transition options](#transition-options)).
 
@@ -497,6 +502,12 @@ const smooth = createSpring(x, {stiffness: 200, damping: 30})
 Derived values recompute on Motion's frame loop rather than on the write, so a burst of updates in one frame costs one recomputation. Each is torn down with the owner that created it, so call these inside a component.
 
 Animating a property that has a value bound to it retargets **that** value rather than shadowing it, so `x.get()` keeps reporting the truth while an `animate` prop drives it.
+
+`createMotion` has no `style` prop to read, so pass values through the `values` option instead:
+
+```tsx
+createMotion(el, () => ({values: {x}, animate: {opacity: 1}}))
+```
 
 ## Custom components
 

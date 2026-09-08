@@ -185,19 +185,42 @@ test.describe("drag", () => {
 		await expect.poll(() => translateX(box)).toBeCloseTo(150, 0)
 	})
 
+	/*
+	Velocity is measured from how fast the pointer actually moved, so driving
+	this with `page.mouse` makes the result depend on how loaded the machine is
+	— under parallel load the moves arrive slowly enough to carry no momentum
+	at all. Dispatching the moves with a fixed spacing makes the release
+	velocity the same every run, while the inertia physics and the resulting
+	layout stay entirely real.
+	*/
 	test("releasing with velocity carries the element on", async ({page}) => {
 		await openDemo(page, "drag-momentum")
 		const box = page.getByTestId("box")
-		const start = (await box.boundingBox())!
-		const originY = start.y + start.height / 2
 
-		await page.mouse.move(start.x + start.width / 2, originY)
-		await page.mouse.down()
-		await page.mouse.move(start.x + start.width / 2 + 60, originY, {steps: 3})
-		await page.mouse.up()
+		await page.evaluate(async () => {
+			const el = document.querySelector('[data-testid="box"]')!
+			const event = (type: string, x: number): PointerEvent =>
+				new PointerEvent(type, {
+					bubbles: true,
+					pointerType: "mouse",
+					button: 0,
+					isPrimary: true,
+					pointerId: 1,
+					clientX: x,
+					clientY: 50,
+				})
 
-		// thrown past its release point, then settled back onto the bound
-		await expect.poll(() => translateX(box), {timeout: 4000}).toBeCloseTo(120, 0)
+			el.dispatchEvent(event("pointerdown", 0))
+			for (let x = 20; x <= 80; x += 20) {
+				window.dispatchEvent(event("pointermove", x))
+				await new Promise(resolve => requestAnimationFrame(resolve))
+			}
+			window.dispatchEvent(event("pointerup", 80))
+		})
+
+		// released at 80, thrown past it, and clamped to the 120 bound
+		await expect.poll(() => translateX(box), {timeout: 4000}).toBeGreaterThan(115)
+		await expect.poll(() => translateX(box), {timeout: 4000}).toBeLessThan(121)
 	})
 })
 

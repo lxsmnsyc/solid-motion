@@ -49,6 +49,18 @@ describe("MotionValue", () => {
 	A derived value recomputes on Motion's own frame loop rather than on the
 	write, so that a burst of updates in one frame costs one recomputation.
 	*/
+	test("A value passed as `values` binds too, and never reaches the DOM", async () => {
+		const x = createRoot(() => createMotionValue(25))
+
+		render(() => <Motion.div data-testid="box" values={{x}} />)
+		const box = await screen.findByTestId("box")
+
+		await sleep(60)
+		expect(box.style.transform).toBe("translateX(25px)")
+		// the option is consumed, not forwarded as an attribute
+		expect(box.hasAttribute("values")).toBe(false)
+	})
+
 	test("createTransform maps an input range onto an output range", async () => {
 		const {progress, opacity, dispose} = createRoot(dispose => {
 			const progress = createMotionValue(0)

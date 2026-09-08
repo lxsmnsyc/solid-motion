@@ -631,7 +631,8 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 		void applyTarget(resolveActiveTarget())
 	}
 
-	function bindGestures(el: Element): () => void {
+	function bindGestures(ctx: MountContext): () => void {
+		const el = ctx.element
 		const unbinds = GESTURES.filter(gesture => options[gesture.layer]).map(gesture =>
 			gesture.bind(
 				el,
@@ -652,9 +653,9 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 			unbinds.push(
 				bindDrag({
 					element: el,
-					value: axis => valueFor(current!, axis) as never,
+					value: axis => valueFor(ctx, axis) as never,
 					options: () => options,
-					setDragging: (isActive, event) => {
+					setDragging: isActive => {
 						/*
 						`x`/`y` are captured before the layer turns on, so
 						releasing the drag resolves back to wherever the element
@@ -663,7 +664,6 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 						if (isActive) captureBaseValues(el, "dragging")
 						active.dragging = isActive
 						void applyTarget(resolveActiveTarget())
-						void event
 					},
 					dispatch: (type, detail) => dispatch(el, type, detail),
 				}),
@@ -723,7 +723,7 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 			lastTarget = target
 			if (!sameValues(startTarget, target)) void applyTarget(target)
 
-			ctx.unbindGestures = bindGestures(el)
+			ctx.unbindGestures = bindGestures(ctx)
 
 			if (options.layout) {
 				ctx.unregisterLayout = registerLayout({
@@ -769,7 +769,7 @@ export function createMotionState(initialOptions: Options, parent?: MotionState)
 			// re-arming here would let a gesture landing mid-exit cut it short
 			if (current && !exiting && gesturesChanged(prevOptions, options)) {
 				current.unbindGestures?.()
-				current.unbindGestures = bindGestures(current.element)
+				current.unbindGestures = bindGestures(current)
 			}
 
 			if (current) bindExternalValues(current)

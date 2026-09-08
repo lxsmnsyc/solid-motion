@@ -32,6 +32,7 @@ const OPTION_KEYS = [
 	"dragTransition",
 	"layout",
 	"layoutTransition",
+	"values",
 	"variants",
 	"transition",
 	"exit",
@@ -76,7 +77,14 @@ function motionOptions(props: MotionComponentProps & {style?: MotionStyle}): () 
 	return () => {
 		const options = {} as Record<string, unknown>
 		for (const key of OPTION_KEYS) options[key] = props[key]
-		options["values"] = splitStyle(props.style).values
+
+		/*
+		Values found in `style` are merged over any passed as `values` directly,
+		rather than replacing them — both are legitimate ways to hand a
+		MotionValue over, and `style` is the more specific of the two.
+		*/
+		const styleValues = splitStyle(props.style).values
+		if (styleValues) options["values"] = {...props.values, ...styleValues}
 		return options as Options
 	}
 }
