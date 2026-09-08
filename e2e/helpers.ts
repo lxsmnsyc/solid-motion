@@ -21,44 +21,30 @@ export async function opacity(locator: Locator): Promise<number> {
 }
 
 /**
- * Waits until an element's animations have finished, then returns the computed
- * value of `property`. Avoids sleeping for a fixed duration, which is flaky
- * across the three browser engines.
+ * Waits until an element's animated property stops changing, then returns it.
+ * Avoids sleeping for a fixed duration, which is flaky across the three
+ * browser engines.
  */
 export async function settled(locator: Locator, property = "opacity"): Promise<string> {
 	/*
-	Ask the browser rather than sampling. `motion-dom` runs opacity and
-	transform through the Web Animations API, so in a real browser they are
-	driven on the compositor — and WebKit does not tick `getComputedStyle` in
-	lockstep with a compositor-driven animation. Two equal reads there prove
-	nothing, which is exactly how a mid-flight value gets mistaken for a
-	settled one.
-
-	Bounded, because draining one animation can reveal its replacement: the
-	engine stops the previous controls on every retarget.
+	Let Motion's frame loop apply the first frame of whatever the last action
+	triggered, so the sampling below cannot open on a pre-start value and
+	mistake it for a resting one.
 	*/
-	for (let i = 0; i < 20; i++) {
-		const idle = await locator.evaluate(async el => {
-			// two frames, so an animation the last action triggered has been
-			// registered by the time we look for it
-			await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-			await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-
-			const running = el.getAnimations()
-			if (running.length === 0) return true
-			// `finished` rejects when Motion cancels an animation to retarget,
-			// which is an ordinary outcome here rather than a failure
-			await Promise.all(running.map(animation => animation.finished.catch(() => undefined)))
-			return false
-		})
-		if (idle) break
-	}
+	await locator.evaluate(async () => {
+		await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+		await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+	})
 
 	/*
-	Values Motion drives on its own rAF loop instead of through WAAPI —
-	anything bound to a `MotionValue` — leave nothing for `getAnimations` to
-	report, so they still need sampling. Two matching pairs rather than one:
-	a single pair can straddle a frame the value happened not to change on.
+	Sampling, rather than awaiting `el.getAnimations()`, because there is
+	nothing there to await: this engine drives its animations on Motion's own
+	rAF loop and writes inline styles, so `getAnimations()` reports zero on
+	every frame of a running animation. Measured, not assumed.
+
+	Two matching pairs rather than one. One pair is what made this flaky: two
+	consecutive reads can land either side of a frame the value happened not
+	to change on, and a mid-flight value then passes as a settled one.
 	*/
 	let previous = await computed(locator, property)
 	let matches = 0
