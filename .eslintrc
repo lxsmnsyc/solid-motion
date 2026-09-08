@@ -9,7 +9,8 @@
 			"./tsconfig.node.json",
 			"./test/tsconfig.json",
 			"./e2e/tsconfig.json",
-			"./playground/tsconfig.json"
+			"./playground/tsconfig.json",
+			"./.storybook/tsconfig.json"
 		],
 		"tsconfigRootDir": ".",
 		"sourceType": "module"

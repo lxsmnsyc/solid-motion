@@ -19,10 +19,12 @@
 		"test:coverage": "vitest run --coverage",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui",
+		"storybook": "storybook dev -p 6006",
+		"build-storybook": "storybook build",
 		"format": "prettier --cache -w .",
 		"lint": "pnpm run lint:code && pnpm run lint:types",
-		"lint:code": "eslint --ignore-path .gitignore --max-warnings 0 --ext .js,.jsx,.ts,.tsx src test e2e playground",
-		"lint:types": "tsc --noEmit && tsc --noEmit -p test && tsc --noEmit -p e2e && tsc --noEmit -p playground"
+		"lint:code": "eslint --ignore-path .gitignore --max-warnings 0 --ext .js,.jsx,.ts,.tsx src test e2e playground stories .storybook",
+		"lint:types": "tsc --noEmit && tsc --noEmit -p test && tsc --noEmit -p e2e && tsc --noEmit -p playground && tsc --noEmit -p .storybook"
 	},
 	"type": "module",
 	"files": [
@@ -68,10 +70,13 @@
 		"jsdom": "^30.0.1",
 		"prettier": "^3.1.1",
 		"solid-js": "2.0.0-rc.5",
+		"storybook": "^10.6.0",
+		"storybook-solidjs-vite": "^10.7.1",
 		"tsup": "^8.0.1",
 		"tsup-preset-solid": "^2.2.0",
 		"typescript": "^5.3.3",
 		"vite": "^8.2.2",
+		"vite-plugin-solid": "3.0.0-next.27",
 		"vitest": "^4.1.11"
 	},
 	"peerDependencies": {
@@ -80,7 +85,8 @@
 	"packageManager": "pnpm@10.9.0",
 	"pnpm": {
 		"overrides": {
-			"babel-preset-solid": "2.0.0-rc.2"
+			"babel-preset-solid": "2.0.0-rc.2",
+			"vite-plugin-solid": "3.0.0-next.27"
 		}
 	}
 }

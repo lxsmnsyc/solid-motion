@@ -1,0 +1,18 @@
+{
+	"extends": "../tsconfig.base.json",
+	"compilerOptions": {
+		"lib": ["ESNext", "DOM"],
+		"jsx": "preserve",
+		"jsxImportSource": "@solidjs/web",
+		"types": ["node"],
+		/*
+		Bundler resolution rather than the base config's NodeNext: Vite compiles
+		these files, and `storybook-solidjs-vite` ships extensionless relative
+		re-exports in its own `.d.ts`, which NodeNext refuses to follow — so
+		`Meta` and `StoryObj` come back as missing exports under it.
+		*/
+		"module": "ESNext",
+		"moduleResolution": "bundler"
+	},
+	"include": ["./*.ts", "../stories/**/*"]
+}
